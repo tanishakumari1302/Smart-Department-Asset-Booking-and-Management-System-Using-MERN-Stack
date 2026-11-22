@@ -1,0 +1,11 @@
+{
+  "name": "Remix AssetHub - College Asset Booking \u0026 Management ERP",
+  "description": "Smart Department Asset Booking and Management System using MERN Stack, temporary and permanent bookings, conflict prevention, consumable stock issues, and audit logs.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

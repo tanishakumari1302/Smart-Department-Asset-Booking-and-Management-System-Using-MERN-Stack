@@ -1,0 +1,157 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isCurrentUser(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email in [
+          'tanishakumari34703@gmail.com',
+          'harpreet.aulakh@sunstone.in',
+          'harpreet@sunstone.in',
+          'malay@sunstone.in',
+          'malay.aggarwal@college.edu',
+          'malayaggarwal@gmail.com',
+          'arpit.singh@sunstone.in',
+          'arpitsingh@gmail.com',
+          'arpit.singh@college.edu'
+        ] ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+      );
+    }
+
+    function isHOD() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'hod'];
+    }
+
+    function isTech() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'tech'];
+    }
+
+    function isStaff() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'hod', 'tech'];
+    }
+
+    function getUserDept() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid)) ?
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.department : '';
+    }
+
+    // --- Entity Validation Helpers ---
+    function isValidUser(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.email is string && data.email.size() > 3 && data.email.size() <= 100;
+    }
+
+    function isValidAsset(data) {
+      return data.code is string && data.code.size() > 0 && data.code.size() <= 50 &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 150 &&
+             data.totalQuantity is number && data.totalQuantity >= 0 &&
+             data.availableQuantity is number && data.availableQuantity >= 0;
+    }
+
+    function isValidBooking(data) {
+      return data.reqId is string && data.reqId.size() > 0 && data.reqId.size() <= 50 &&
+             data.assetCode is string && data.assetCode.size() > 0 && data.assetCode.size() <= 50 &&
+             data.assetName is string && data.assetName.size() > 0 && data.assetName.size() <= 150 &&
+             data.quantity is number && data.quantity > 0;
+    }
+
+    function isValidAuditLog(data) {
+      return data.action is string && data.action.size() > 0 && data.action.size() <= 150 &&
+             data.actorName is string && data.actorName.size() > 0 && data.actorName.size() <= 100;
+    }
+
+    function isValidDepartment(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 150 &&
+             data.code is string && data.code.size() > 0 && data.code.size() <= 20;
+    }
+
+    function isValidStaffMember(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.email is string && data.email.size() > 3 && data.email.size() <= 100 &&
+             data.role in ['admin', 'hod', 'faculty', 'tech'] &&
+             data.department is string && data.department.size() > 0;
+    }
+
+    // --- Users Collection ---
+    match /users/{userId} {
+      allow read: if true;
+      allow create, update: if isValidUser(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // --- Staff Directory Collection ---
+    match /staff_directory/{staffId} {
+      allow read: if true;
+      allow create, update: if isValidStaffMember(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // --- Assets Collection ---
+    match /assets/{assetId} {
+      allow read: if true;
+      allow create, update: if isValidAsset(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // --- Bookings Collection ---
+    match /bookings/{bookingId} {
+      allow read: if true;
+      allow create, update: if isValidBooking(incoming());
+      allow delete: if isAdmin() || isSignedIn();
+    }
+
+    // --- Departments Collection ---
+    match /departments/{deptId} {
+      allow read: if true;
+      allow create, update: if isValidDepartment(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // --- Audit Logs Collection (Immutable append-only, readable for governance) ---
+    match /audit_logs/{logId} {
+      allow read: if true;
+      allow create: if isValidAuditLog(incoming());
+      allow update, delete: if false; // Immutable audit log
+    }
+
+    // --- System Settings Collection ---
+    match /system_settings/{settingId} {
+      allow read: if true;
+      allow create, update, delete: if true;
+    }
+  }
+}

@@ -1,0 +1,152 @@
+{
+  "entities": {
+    "Department": {
+      "title": "Department",
+      "description": "College academic department or central facility node",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string", "maxLength": 20 },
+        "name": { "type": "string", "maxLength": 150 },
+        "shortName": { "type": "string", "maxLength": 50 },
+        "block": { "type": "string", "maxLength": 100 },
+        "headOfDept": { "type": "string", "maxLength": 100 },
+        "facultyCount": { "type": "number" },
+        "assetCount": { "type": "number" }
+      },
+      "required": ["code", "name"]
+    },
+    "User": {
+      "title": "User",
+      "description": "Department faculty, staff, or admin user profile",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string", "format": "email" },
+        "role": { "type": "string", "enum": ["admin", "hod", "faculty", "tech"] },
+        "department": { "type": "string", "maxLength": 150 },
+        "designation": { "type": "string", "maxLength": 100 },
+        "facultyId": { "type": "string", "maxLength": 50 },
+        "avatar": { "type": "string" },
+        "phone": { "type": "string", "maxLength": 30 },
+        "room": { "type": "string", "maxLength": 100 },
+        "approvalStatus": { "type": "string", "enum": ["approved", "pending", "rejected"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["name", "email", "role"]
+    },
+    "StaffMember": {
+      "title": "StaffMember",
+      "description": "Pre-registered faculty and staff member directory for automatic role and department assignment",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string", "format": "email" },
+        "role": { "type": "string", "enum": ["admin", "hod", "faculty", "tech"] },
+        "department": { "type": "string", "maxLength": 150 },
+        "designation": { "type": "string", "maxLength": 100 },
+        "status": { "type": "string", "enum": ["active", "deactivated"] },
+        "registered": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["name", "email", "role", "department", "status"]
+    },
+    "Asset": {
+      "title": "Asset",
+      "description": "Department equipment, stationery, IT hardware or audio-visual asset",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "maxLength": 50 },
+        "name": { "type": "string", "maxLength": 150 },
+        "category": { "type": "string", "enum": ["stationery", "it", "audio", "recording"] },
+        "categoryLabel": { "type": "string", "maxLength": 100 },
+        "classification": { "type": "string", "maxLength": 100 },
+        "description": { "type": "string", "maxLength": 500 },
+        "totalQuantity": { "type": "number" },
+        "availableQuantity": { "type": "number" },
+        "dispatchedQuantity": { "type": "number" },
+        "permanentQuantity": { "type": "number" },
+        "minThreshold": { "type": "number" },
+        "isConsumable": { "type": "boolean" },
+        "isReusable": { "type": "boolean" },
+        "unit": { "type": "string", "maxLength": 20 },
+        "location": { "type": "string", "maxLength": 150 },
+        "status": { "type": "string", "enum": ["operational", "low-stock", "maintenance", "depleted"] },
+        "barcodeTagStatus": { "type": "string", "enum": ["verified", "pending", "unlabeled"] },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["code", "name", "category", "totalQuantity", "availableQuantity"]
+    },
+    "Booking": {
+      "title": "Booking",
+      "description": "Asset booking requisition, permanent allocation, or consumable issue",
+      "type": "object",
+      "properties": {
+        "reqId": { "type": "string", "maxLength": 50 },
+        "title": { "type": "string", "maxLength": 200 },
+        "assetCode": { "type": "string", "maxLength": 50 },
+        "assetName": { "type": "string", "maxLength": 150 },
+        "quantity": { "type": "number" },
+        "purpose": { "type": "string", "maxLength": 500 },
+        "bookingType": { "type": "string", "enum": ["temporary", "permanent", "consumable"] },
+        "startDate": { "type": "string" },
+        "endDate": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected", "dispatched", "returned", "cancelled"] },
+        "requesterId": { "type": "string" },
+        "requesterName": { "type": "string", "maxLength": 100 },
+        "requesterEmail": { "type": "string", "format": "email" },
+        "requesterDept": { "type": "string", "maxLength": 150 },
+        "venue": { "type": "string", "maxLength": 150 },
+        "remarks": { "type": "string", "maxLength": 500 },
+        "gatepassGenerated": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["reqId", "assetCode", "assetName", "quantity", "bookingType", "status", "requesterEmail"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "System audit and asset custody tracking log entry",
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "maxLength": 150 },
+        "category": { "type": "string", "enum": ["booking", "inventory", "auth", "system", "return"] },
+        "actorName": { "type": "string", "maxLength": 100 },
+        "actorRole": { "type": "string", "maxLength": 50 },
+        "targetId": { "type": "string", "maxLength": 100 },
+        "details": { "type": "string", "maxLength": 1000 },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["action", "category", "actorName", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profile documents keyed by Firebase auth UID"
+    },
+    "/assets/{assetId}": {
+      "schema": { "$ref": "#/entities/Asset" },
+      "description": "Academic department assets catalog and real-time inventory"
+    },
+    "/bookings/{bookingId}": {
+      "schema": { "$ref": "#/entities/Booking" },
+      "description": "Asset requisitions, reservations, allocations and issues"
+    },
+    "/departments/{deptId}": {
+      "schema": { "$ref": "#/entities/Department" },
+      "description": "College departments across academic engineering, management, sciences and administration"
+    },
+    "/staff_directory/{staffId}": {
+      "schema": { "$ref": "#/entities/StaffMember" },
+      "description": "Pre-registered faculty and staff directory for automated RBAC and department provisioning"
+    },
+    "/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Immutable audit entries and asset transaction history"
+    }
+  }
+}

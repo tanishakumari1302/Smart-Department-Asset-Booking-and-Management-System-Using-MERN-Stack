@@ -1,0 +1,16 @@
+{
+  "name": "AssetHub - College Asset Booking & Management ERP",
+  "short_name": "AssetHub ERP",
+  "description": "Smart College Asset Booking and Management System",
+  "start_url": "/?portal=faculty",
+  "display": "standalone",
+  "background_color": "#0e1c2f",
+  "theme_color": "#009299",
+  "icons": [
+    {
+      "src": "/assets/faculty/malay_aggarwal.jpeg",
+      "sizes": "192x192",
+      "type": "image/jpeg"
+    }
+  ]
+}
