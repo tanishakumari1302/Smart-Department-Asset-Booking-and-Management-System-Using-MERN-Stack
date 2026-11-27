@@ -9,13 +9,22 @@ import {
   FacultyCustodyProfile,
   FacultyCustodyItem,
   StockNotificationRequest,
-  AUTHORIZED_FACULTY_MEMBERS,
+  StaffMember,
+  buildMergedStaffLists,
 } from '../types';
+import {
+  subscribeToFacultyCustodyRoster,
+  saveFacultyCustodyRosterInFirestore,
+  directAllotAssetToFacultyInFirestore,
+  restockCustodyItemInFirestore,
+} from '../firebase';
+import { DirectAllotModal, DirectAllotPayload } from './modals/DirectAllotModal';
 
 interface FacultyCustodyStationeryViewProps {
   currentUser?: User | null;
   assets: Asset[];
   bookings: Booking[];
+  staffDirectory?: StaffMember[];
   academicSettings?: AcademicSettings;
   onOpenGatepass?: (booking: Booking) => void;
   showToast: (text: string, type?: 'success' | 'warning' | 'info') => void;
@@ -42,6 +51,7 @@ export const FacultyCustodyStationeryView: React.FC<FacultyCustodyStationeryView
   currentUser,
   assets,
   bookings,
+  staffDirectory = [],
   academicSettings,
   onOpenGatepass,
   showToast,
@@ -54,6 +64,24 @@ export const FacultyCustodyStationeryView: React.FC<FacultyCustodyStationeryView
   const [selectedTeacherModal, setSelectedTeacherModal] = useState<FacultyCustodyProfile | null>(null);
   const [activeModalTab, setActiveModalTab] = useState<'current' | 'history'>('current');
   const [activeKpiDetailModal, setActiveKpiDetailModal] = useState<'teachers' | 'units' | 'markers' | 'out-of-stock' | null>(null);
+
+  // Admin Custody Live Editing State (persisted permanently to Firestore)
+  const [isEditingVenue, setIsEditingVenue] = useState(false);
+  const [editVenueText, setEditVenueText] = useState('');
+  const [editSessionText, setEditSessionText] = useState('');
+  const [isAddingCustodyItem, setIsAddingCustodyItem] = useState(false);
+  const [newItemAssetCode, setNewItemAssetCode] = useState('__custom__');
+  const [newItemName, setNewItemName] = useState('');
+  const [newItemMarkerColor, setNewItemMarkerColor] = useState<string>('black');
+  const [newItemQty, setNewItemQty] = useState<number>(1);
+  const [newItemStart, setNewItemStart] = useState('09:30 AM');
+  const [newItemEnd, setNewItemEnd] = useState('11:00 AM');
+  const [savingCustody, setSavingCustody] = useState(false);
+  const [hasLoadedFirestoreRoster, setHasLoadedFirestoreRoster] = useState(false);
+  const [isDirectAllotOpen, setIsDirectAllotOpen] = useState(false);
+  const [directAllotTarget, setDirectAllotTarget] = useState<FacultyCustodyProfile | null>(null);
+
+  const canManageCustody = !currentUser || currentUser.role !== 'faculty';
 
   // 'Notify Me' State
   const [isNotifyModalOpen, setIsNotifyModalOpen] = useState(false);
@@ -800,6 +828,64 @@ export const FacultyCustodyStationeryView: React.FC<FacultyCustodyStationeryView
     },
   ]);
 
+  // Subscribe to permanent Firestore Faculty Custody & Stationery Roster so changes NEVER revert on refresh
+  useEffect(() => {
+    const unsub = subscribeToFacultyCustodyRoster((savedRoster) => {
+      if (savedRoster && Array.isArray(savedRoster)) {
+        setFacultyRoster(savedRoster);
+        setSelectedTeacherModal((prevSel) => {
+          if (!prevSel) return null;
+          return savedRoster.find((r) => r.facultyId === prevSel.facultyId) || prevSel;
+        });
+      }
+      setHasLoadedFirestoreRoster(true);
+    });
+    return () => unsub();
+  }, []);
+
+  // Keep facultyRoster synced with live staffDirectory (adds newly registered faculty, updates details, removes deleted faculty)
+  useEffect(() => {
+    const { faculty: liveFaculty } = buildMergedStaffLists(staffDirectory);
+    if (!liveFaculty || liveFaculty.length === 0) return;
+
+    const liveByEmail = new Map<string, User>();
+    liveFaculty.forEach((f) => {
+      if (f.email) liveByEmail.set(f.email.toLowerCase().trim(), f);
+    });
+
+    setFacultyRoster((prev) => {
+      const updatedExisting = prev
+        .filter((p) => liveByEmail.has((p.email || '').toLowerCase().trim()))
+        .map((p) => {
+          const live = liveByEmail.get((p.email || '').toLowerCase().trim())!;
+          return {
+            ...p,
+            facultyName: live.name,
+            department: live.department || p.department,
+            cabin: live.room || p.cabin,
+            avatar: live.avatar || p.avatar,
+          };
+        });
+
+      const existingEmails = new Set(updatedExisting.map((p) => (p.email || '').toLowerCase().trim()));
+      const newlyAdded: FacultyCustodyProfile[] = liveFaculty
+        .filter((f) => !existingEmails.has((f.email || '').toLowerCase().trim()))
+        .map((f) => ({
+          facultyId: f.id || f._id,
+          facultyName: f.name,
+          department: f.department || 'Academic Faculty',
+          cabin: f.room || 'Faculty Wing',
+          email: f.email,
+          avatar: f.avatar || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(f.name)}`,
+          currentVenue: f.room || 'Faculty Desk',
+          currentSession: 'Active Faculty Member • Ready for Asset & Stationery Issue',
+          items: [],
+        }));
+
+      return [...updatedExisting, ...newlyAdded];
+    });
+  }, [staffDirectory, hasLoadedFirestoreRoster]);
+
   // Master historical database for all 12 teachers
   const facultyHistoryDB = useMemo<Record<string, FacultyHistoryRecord[]>>(() => {
     return {
@@ -1200,14 +1286,222 @@ export const FacultyCustodyStationeryView: React.FC<FacultyCustodyStationeryView
     showToast(`Subscribed! An email notification will be triggered when ${selectedNotifyAsset.name} session ends.`, 'success');
   };
 
-  // Simulate ending a faculty session and checking in their markers
-  const handleReleaseFacultySession = (faculty: FacultyCustodyProfile) => {
+  // Helper to update roster both locally and permanently in Cloud Firestore
+  const persistRosterUpdate = async (
+    nextRoster: FacultyCustodyProfile[],
+    updatedTeacherId?: string,
+    auditNote?: string
+  ) => {
+    setFacultyRoster(nextRoster);
+    if (updatedTeacherId) {
+      const found = nextRoster.find((f) => f.facultyId === updatedTeacherId) || null;
+      setSelectedTeacherModal(found);
+    }
+    setSavingCustody(true);
+    try {
+      await saveFacultyCustodyRosterInFirestore(nextRoster, currentUser, auditNote);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to save custody update to Firestore', 'warning');
+    } finally {
+      setSavingCustody(false);
+    }
+  };
+
+  // Save edited classroom venue & lecture timetable permanently to Firestore
+  const handleSaveVenueSession = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedTeacherModal) return;
+    const nextRoster = facultyRoster.map((f) =>
+      f.facultyId === selectedTeacherModal.facultyId
+        ? {
+            ...f,
+            currentVenue: editVenueText.trim() || f.currentVenue,
+            currentSession: editSessionText.trim() || f.currentSession,
+          }
+        : f
+    );
+    setIsEditingVenue(false);
+    await persistRosterUpdate(
+      nextRoster,
+      selectedTeacherModal.facultyId,
+      `Updated classroom/session for ${selectedTeacherModal.facultyName} to ${editVenueText.trim()}`
+    );
+    showToast(`Saved classroom & session for ${selectedTeacherModal.facultyName} permanently!`, 'success');
+  };
+
+  // Issue / Add a stationery or asset item to a teacher's permanent custody
+  const handleAddItemToFaculty = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedTeacherModal) return;
+    const matchedAsset =
+      newItemAssetCode !== '__custom__'
+        ? assets.find((a) => a.code === newItemAssetCode)
+        : undefined;
+    const finalName = (newItemName.trim() || matchedAsset?.name || '').trim();
+    if (!finalName) {
+      showToast('Please select an asset or enter an item name.', 'warning');
+      return;
+    }
+
+    const newItem: FacultyCustodyItem = {
+      id: `item-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      assetCode: matchedAsset?.code || `STN-${Date.now().toString().slice(-4)}`,
+      name: finalName,
+      category: matchedAsset?.category === 'it' || matchedAsset?.category === 'audio' ? matchedAsset.category : 'stationery',
+      ...(newItemMarkerColor !== 'none' ? { markerColor: newItemMarkerColor as MarkerColor } : {}),
+      quantity: Math.max(1, Number(newItemQty) || 1),
+      assignedVenue: selectedTeacherModal.currentVenue || 'Classroom',
+      sessionStartTime: newItemStart.trim() || '09:30 AM',
+      sessionEndTime: newItemEnd.trim() || '11:00 AM',
+      status: 'in-use',
+    };
+
+    const nextRoster = facultyRoster.map((f) =>
+      f.facultyId === selectedTeacherModal.facultyId
+        ? { ...f, items: [...f.items, newItem] }
+        : f
+    );
+
+    setNewItemName('');
+    setNewItemAssetCode('__custom__');
+    setNewItemQty(1);
+    setIsAddingCustodyItem(false);
+
+    await persistRosterUpdate(
+      nextRoster,
+      selectedTeacherModal.facultyId,
+      `Issued ${newItem.quantity}x ${newItem.name} to ${selectedTeacherModal.facultyName}`
+    );
+    showToast(`Issued ${newItem.quantity}x ${newItem.name} to ${selectedTeacherModal.facultyName} (saved permanently)!`, 'success');
+  };
+
+  // Return / Remove a single item from a teacher's permanent custody (and auto-restock catalog + close linked booking)
+  const handleRemoveSingleItem = async (faculty: FacultyCustodyProfile, item: FacultyCustodyItem) => {
+    const nextRoster = facultyRoster.map((f) => {
+      if (f.facultyId !== faculty.facultyId) return f;
+      const remaining = f.items.filter((i) => i.id !== item.id);
+      return {
+        ...f,
+        items: remaining,
+        currentSession:
+          remaining.length === 0 ? 'Session Concluded • All Items Checked In' : f.currentSession,
+      };
+    });
+    await persistRosterUpdate(
+      nextRoster,
+      faculty.facultyId,
+      `Checked in / removed ${item.name} from ${faculty.facultyName}`
+    );
+    try {
+      await restockCustodyItemInFirestore(item, faculty.facultyName, currentUser);
+    } catch (err) {
+      console.warn('Restock sync warning:', err);
+    }
+    showToast(`Checked in ${item.name} from ${faculty.facultyName} & updated catalog stock.`, 'info');
+  };
+
+  // Direct Admin / Office Staff Allotment handler (Syncs Catalog Stock + Bookings + Permanent Allocations + Faculty Custody)
+  const handleConfirmDirectAllot = async (payload: DirectAllotPayload) => {
+    const createdBooking = await directAllotAssetToFacultyInFirestore(
+      {
+        facultyId: payload.facultyId,
+        facultyName: payload.facultyName,
+        facultyEmail: payload.facultyEmail,
+        facultyDepartment: payload.facultyDepartment,
+        assetCode: payload.assetCode,
+        assetName: payload.assetName,
+        isCatalogAsset: payload.isCatalogAsset,
+        allotmentType: payload.allotmentType,
+        quantity: payload.quantity,
+        venue: payload.venue,
+        startTime: payload.startTime,
+        endTime: payload.endTime,
+        purpose: payload.purpose,
+        isExtraUnit: payload.isExtraUnit,
+        existingCustodySummary: payload.existingCustodySummary,
+      },
+      currentUser
+    );
+
+    const newItem: FacultyCustodyItem = {
+      id: `item-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      assetCode: payload.assetCode,
+      name: payload.assetName,
+      category:
+        payload.assetCategory === 'it' ||
+        payload.assetCategory === 'audio' ||
+        payload.assetCategory === 'recording'
+          ? payload.assetCategory
+          : 'stationery',
+      ...(payload.markerColor ? { markerColor: payload.markerColor } : {}),
+      quantity: payload.quantity,
+      assignedVenue: payload.venue,
+      sessionStartTime: payload.startTime,
+      sessionEndTime: payload.endTime,
+      status: 'in-use',
+      linkedBookingId: createdBooking.reqId,
+      allotmentType: payload.allotmentType,
+      isExtraUnit: payload.isExtraUnit,
+      isCatalogAsset: payload.isCatalogAsset,
+    };
+
+    const nextRoster = facultyRoster.map((f) => {
+      if (f.facultyId !== payload.facultyId) return f;
+      const wasIdle = f.items.length === 0 || f.currentSession.toLowerCase().includes('concluded');
+      return {
+        ...f,
+        currentVenue: payload.venue || f.currentVenue,
+        currentSession: wasIdle
+          ? `${payload.startTime} – ${payload.endTime} • ${payload.purpose || 'Direct Admin Allotment'}`
+          : f.currentSession,
+        items: [...f.items, newItem],
+      };
+    });
+
+    await persistRosterUpdate(
+      nextRoster,
+      selectedTeacherModal?.facultyId === payload.facultyId ? payload.facultyId : undefined,
+      `Directly allotted ${payload.quantity}x ${payload.assetName} to ${payload.facultyName}${payload.isExtraUnit ? ' (Extra Unit)' : ''}`
+    );
+
+    showToast(
+      `Allotted ${payload.quantity}× ${payload.assetName} to ${payload.facultyName} (${createdBooking.reqId}) — Stock, Custody & Gatepass synced!`,
+      'success'
+    );
+  };
+
+  // End a faculty session and check in ALL their items permanently to Firestore (keeps faculty in roster with 0 items)
+  const handleReleaseFacultySession = async (faculty: FacultyCustodyProfile) => {
     const releasedMarker = faculty.items.find((i) => i.markerColor);
     const releasedName = releasedMarker ? releasedMarker.name : 'Classroom Equipment';
+    const itemsToReturn = [...faculty.items];
 
-    // Mark items returned in state
-    setFacultyRoster((prev) => prev.filter((f) => f.facultyId !== faculty.facultyId));
-    setSelectedTeacherModal(null);
+    const nextRoster = facultyRoster.map((f) =>
+      f.facultyId === faculty.facultyId
+        ? {
+            ...f,
+            currentSession: 'Session Concluded • All Items Checked In',
+            items: [],
+          }
+        : f
+    );
+
+    await persistRosterUpdate(
+      nextRoster,
+      faculty.facultyId,
+      `Checked in all items for ${faculty.facultyName}`
+    );
+
+    // Restock catalog items and close linked bookings cleanly
+    for (const item of itemsToReturn) {
+      if (item.linkedBookingId || item.isCatalogAsset) {
+        try {
+          await restockCustodyItemInFirestore(item, faculty.facultyName, currentUser);
+        } catch {
+          // ignore individual sync errors
+        }
+      }
+    }
 
     // Trigger automated email alert to all waiting subscribers for this asset
     const targetSubs = activeSubscribers.filter((s) => !s.notified);
@@ -1224,17 +1518,16 @@ export const FacultyCustodyStationeryView: React.FC<FacultyCustodyStationeryView
         setEmailLogs((prev) => [logEntry, ...prev]);
       });
 
-      // Mark subscribers as notified
       setActiveSubscribers((prev) =>
         prev.map((s) => ({ ...s, notified: true, notifiedAt: now }))
       );
 
       showToast(
-        `Session ended! Automated pickup email dispatched to ${targetSubs[0].requesterName} (${targetSubs[0].requesterEmail}).`,
+        `All items checked in permanently! Pickup alert dispatched to ${targetSubs[0].requesterName}.`,
         'success'
       );
     } else {
-      showToast(`Session ended! ${faculty.facultyName}'s items checked in successfully.`, 'info');
+      showToast(`All items checked in permanently for ${faculty.facultyName}.`, 'info');
     }
   };
 
@@ -1260,7 +1553,20 @@ export const FacultyCustodyStationeryView: React.FC<FacultyCustodyStationeryView
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {canManageCustody && (
+            <button
+              type="button"
+              onClick={() => {
+                setDirectAllotTarget(null);
+                setIsDirectAllotOpen(true);
+              }}
+              className="h-9 px-3.5 bg-[#009299] hover:bg-[#007a80] text-white rounded-lg text-xs font-bold shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
+            >
+              <span className="material-symbols-outlined text-[18px]">assignment_add</span>
+              <span>+ Direct Allot to Faculty</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => onSelectNavTab('issue-and-return-desk')}
@@ -1330,12 +1636,14 @@ export const FacultyCustodyStationeryView: React.FC<FacultyCustodyStationeryView
               <span className="text-xs text-[#009299] font-bold">In Use</span>
             </div>
             <span className="text-[11px] text-[#44474c] block mt-0.5">
-              26 Markers + 14 Classroom Tech Aids
+              {stats.totalMarkers} Markers + {stats.otherAssets} Classroom Tech Aids
             </span>
           </div>
           <div className="mt-3 pt-2 bg-[#eff4ff]/60 rounded-lg px-2.5 py-1 flex items-center justify-between text-xs">
             <span className="text-[11px] text-[#426086]">Average per Teacher</span>
-            <span className="font-mono text-xs text-[#0b1c30] font-bold">3.3 Units / Teacher</span>
+            <span className="font-mono text-xs text-[#0b1c30] font-bold">
+              {stats.activeTeachers > 0 ? (stats.totalUnits / stats.activeTeachers).toFixed(1) : '0.0'} Units / Teacher
+            </span>
           </div>
         </div>
 
@@ -1496,7 +1804,7 @@ export const FacultyCustodyStationeryView: React.FC<FacultyCustodyStationeryView
                 : 'bg-[#eff4ff] text-[#426086] hover:bg-[#cbdbf5]'
             }`}
           >
-            All (26)
+            All ({stats.totalMarkers})
           </button>
           <button
             type="button"
@@ -1692,6 +2000,11 @@ export const FacultyCustodyStationeryView: React.FC<FacultyCustodyStationeryView
                                     {nm.category === 'it' ? 'devices' : 'inventory_2'}
                                   </span>
                                   <span className="truncate">{nm.name}</span>
+                                  {nm.isExtraUnit && (
+                                    <span className="px-1 py-0.2 rounded bg-amber-100 text-amber-800 text-[9px] font-bold uppercase shrink-0">
+                                      Extra
+                                    </span>
+                                  )}
                                 </span>
                               ))}
                             </div>
@@ -1707,14 +2020,36 @@ export const FacultyCustodyStationeryView: React.FC<FacultyCustodyStationeryView
                         </td>
 
                         <td className="px-4 py-3">
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 inline-flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse"></span>
-                            <span>Teaching Now</span>
-                          </span>
+                          {totalUnitsInCustody > 0 ? (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 inline-flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse"></span>
+                              <span>Teaching Now</span>
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200 inline-flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+                              <span>Checked In</span>
+                            </span>
+                          )}
                         </td>
 
                         <td className="px-4 py-3 text-right">
                           <div className="flex items-center justify-end gap-1.5">
+                            {canManageCustody && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDirectAllotTarget(faculty);
+                                  setIsDirectAllotOpen(true);
+                                }}
+                                className="px-2.5 py-1 bg-[#009299] hover:bg-[#007a80] text-white rounded text-xs font-bold transition-all shadow-xs cursor-pointer inline-flex items-center gap-0.5"
+                                title={`Directly allot an asset or extra unit to ${faculty.facultyName}`}
+                              >
+                                <span className="material-symbols-outlined text-[14px]">add</span>
+                                <span>Allot</span>
+                              </button>
+                            )}
                             <button
                               type="button"
                               onClick={(e) => {
@@ -1727,17 +2062,19 @@ export const FacultyCustodyStationeryView: React.FC<FacultyCustodyStationeryView
                               <span>Details</span>
                               <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
                             </button>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleReleaseFacultySession(faculty);
-                              }}
-                              className="px-2 py-1 text-[11px] font-semibold text-[#44474c] hover:text-[#ba1a1a] hover:bg-rose-50 rounded transition-colors cursor-pointer border border-[#cbdbf5]"
-                              title="Conclude active lecture and return items to storage"
-                            >
-                              End
-                            </button>
+                            {totalUnitsInCustody > 0 && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleReleaseFacultySession(faculty);
+                                }}
+                                className="px-2 py-1 text-[11px] font-semibold text-[#44474c] hover:text-[#ba1a1a] hover:bg-rose-50 rounded transition-colors cursor-pointer border border-[#cbdbf5]"
+                                title="Conclude active lecture and return items to storage"
+                              >
+                                End
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -1787,9 +2124,15 @@ export const FacultyCustodyStationeryView: React.FC<FacultyCustodyStationeryView
                     </div>
                   </div>
 
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 shrink-0">
-                    Teaching Now
-                  </span>
+                  {totalUnitsInCustody > 0 ? (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 shrink-0">
+                      Teaching Now
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200 shrink-0">
+                      Checked In
+                    </span>
+                  )}
                 </div>
 
                 {/* Classroom Venue & Timing Window */}
@@ -1876,23 +2219,40 @@ export const FacultyCustodyStationeryView: React.FC<FacultyCustodyStationeryView
               </div>
 
               {/* Card Footer Actions */}
-              <div className="pt-2.5 border-t border-[#f1f5f9] flex items-center justify-between">
+              <div className="pt-2.5 border-t border-[#f1f5f9] flex items-center justify-between gap-2">
                 <span className="text-xs font-bold text-[#009299] flex items-center gap-1 group-hover:translate-x-0.5 transition-transform">
-                  <span>View Details &amp; History</span>
+                  <span>View Details</span>
                   <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
                 </span>
 
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleReleaseFacultySession(faculty);
-                  }}
-                  className="px-2 py-1 text-[11px] font-semibold text-[#44474c] hover:text-[#ba1a1a] hover:bg-rose-50 rounded transition-colors cursor-pointer"
-                  title="Conclude active lecture and return items to storage"
-                >
-                  Conclude Session
-                </button>
+                <div className="flex items-center gap-1.5">
+                  {canManageCustody && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDirectAllotTarget(faculty);
+                        setIsDirectAllotOpen(true);
+                      }}
+                      className="px-2.5 py-1 text-[11px] font-bold bg-[#009299] hover:bg-[#007a80] text-white rounded transition-colors cursor-pointer"
+                    >
+                      + Allot
+                    </button>
+                  )}
+                  {totalUnitsInCustody > 0 && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleReleaseFacultySession(faculty);
+                      }}
+                      className="px-2 py-1 text-[11px] font-semibold text-[#44474c] hover:text-[#ba1a1a] hover:bg-rose-50 rounded transition-colors cursor-pointer"
+                      title="Conclude active lecture and return items to storage"
+                    >
+                      End
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           );
@@ -2014,31 +2374,217 @@ export const FacultyCustodyStationeryView: React.FC<FacultyCustodyStationeryView
             <div className="p-6 overflow-y-auto space-y-4 text-xs">
               {activeModalTab === 'current' && (
                 <>
-                  {/* Classroom Location & Session Telemetry */}
-                  <div className="p-3.5 rounded-xl bg-[#eff4ff] border border-[#cbdbf5] flex items-center justify-between">
-                    <div>
-                      <span className="text-[10px] uppercase font-bold text-[#426086] block">
-                        Assigned Classroom &amp; Lecture:
-                      </span>
-                      <span className="font-bold text-sm text-[#0b1c30] block mt-0.5">
-                        {selectedTeacherModal.currentVenue}
-                      </span>
-                      <span className="text-[11px] text-[#44474c] mt-0.5 block">
-                        Timetable: {selectedTeacherModal.currentSession}
-                      </span>
-                    </div>
-                    <div className="text-right">
-                      <span className="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 font-bold text-[11px]">
-                        Active Lecture
-                      </span>
-                    </div>
+                  {/* Classroom Location & Session Telemetry (Editable by Admin/Staff) */}
+                  <div className="p-3.5 rounded-xl bg-[#eff4ff] border border-[#cbdbf5]">
+                    {isEditingVenue ? (
+                      <form onSubmit={handleSaveVenueSession} className="space-y-2.5">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-[10px] uppercase font-bold text-[#426086] block mb-1">
+                              Assigned Classroom / Venue
+                            </label>
+                            <input
+                              type="text"
+                              value={editVenueText}
+                              onChange={(e) => setEditVenueText(e.target.value)}
+                              className="w-full h-8 px-2.5 rounded-lg bg-white border border-[#cbdbf5] text-xs font-semibold text-[#0b1c30]"
+                              placeholder="e.g. Room 204, Block A"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] uppercase font-bold text-[#426086] block mb-1">
+                              Lecture / Session Timetable
+                            </label>
+                            <input
+                              type="text"
+                              value={editSessionText}
+                              onChange={(e) => setEditSessionText(e.target.value)}
+                              className="w-full h-8 px-2.5 rounded-lg bg-white border border-[#cbdbf5] text-xs text-[#0b1c30]"
+                              placeholder="e.g. 10:00 AM – 11:30 AM • Data Structures"
+                            />
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setIsEditingVenue(false)}
+                            className="px-2.5 py-1 rounded text-[#44474c] hover:bg-white font-semibold cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="submit"
+                            disabled={savingCustody}
+                            className="px-3 py-1 rounded-lg bg-[#0e1c2f] text-white font-bold cursor-pointer"
+                          >
+                            {savingCustody ? 'Saving...' : 'Save Venue'}
+                          </button>
+                        </div>
+                      </form>
+                    ) : (
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <span className="text-[10px] uppercase font-bold text-[#426086] block">
+                            Assigned Classroom &amp; Lecture:
+                          </span>
+                          <span className="font-bold text-sm text-[#0b1c30] block mt-0.5">
+                            {selectedTeacherModal.currentVenue}
+                          </span>
+                          <span className="text-[11px] text-[#44474c] mt-0.5 block">
+                            Timetable: {selectedTeacherModal.currentSession}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {canManageCustody && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditVenueText(selectedTeacherModal.currentVenue || '');
+                                setEditSessionText(selectedTeacherModal.currentSession || '');
+                                setIsEditingVenue(true);
+                              }}
+                              className="px-2.5 py-1 rounded-lg bg-white border border-[#cbdbf5] text-[#0e1c2f] hover:bg-[#dce9ff] text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                            >
+                              <span className="material-symbols-outlined text-[14px]">edit</span>
+                              <span>Edit Venue</span>
+                            </button>
+                          )}
+                          <span className="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 font-bold text-[11px]">
+                            Saved Live
+                          </span>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
-                  {/* Itemized Distributed Assets Table */}
+                  {/* Itemized Distributed Assets Table + Admin Issue / Add Item */}
                   <div>
-                    <h3 className="font-bold text-xs uppercase text-[#426086] tracking-wider mb-2">
-                      Currently Distributed Assets ({selectedTeacherModal.items.reduce((s, i) => s + i.quantity, 0)} Units):
-                    </h3>
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="font-bold text-xs uppercase text-[#426086] tracking-wider">
+                        Currently Distributed Assets ({selectedTeacherModal.items.reduce((s, i) => s + i.quantity, 0)} Units):
+                      </h3>
+                      {canManageCustody && (
+                        <button
+                          type="button"
+                          onClick={() => setIsAddingCustodyItem((v) => !v)}
+                          className="px-2.5 py-1 rounded-lg bg-[#009299] hover:bg-[#007a80] text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                        >
+                          <span className="material-symbols-outlined text-[14px]">
+                            {isAddingCustodyItem ? 'close' : 'add_circle'}
+                          </span>
+                          <span>{isAddingCustodyItem ? 'Close Form' : 'Issue Stationery / Item'}</span>
+                        </button>
+                      )}
+                    </div>
+
+                    {canManageCustody && isAddingCustodyItem && (
+                      <form
+                        onSubmit={handleAddItemToFaculty}
+                        className="mb-3 p-3 rounded-xl bg-[#f8faff] border border-[#009299]/40 space-y-2.5"
+                      >
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-[10px] uppercase font-bold text-[#426086] block mb-1">
+                              Pick from Catalog (or Custom)
+                            </label>
+                            <select
+                              value={newItemAssetCode}
+                              onChange={(e) => {
+                                setNewItemAssetCode(e.target.value);
+                                const found = assets.find((a) => a.code === e.target.value);
+                                if (found) setNewItemName(found.name);
+                              }}
+                              className="w-full h-8 px-2 rounded-lg bg-white border border-[#cbdbf5] text-xs text-[#0b1c30]"
+                            >
+                              <option value="__custom__">-- Custom Stationery / Item --</option>
+                              {assets.map((a) => (
+                                <option key={a.code} value={a.code}>
+                                  {a.code} — {a.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="text-[10px] uppercase font-bold text-[#426086] block mb-1">
+                              Item Name *
+                            </label>
+                            <input
+                              type="text"
+                              required
+                              value={newItemName}
+                              onChange={(e) => setNewItemName(e.target.value)}
+                              placeholder="e.g. Whiteboard Marker (Black), Duster..."
+                              className="w-full h-8 px-2.5 rounded-lg bg-white border border-[#cbdbf5] text-xs text-[#0b1c30]"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                          <div>
+                            <label className="text-[10px] uppercase font-bold text-[#426086] block mb-1">
+                              Marker Color
+                            </label>
+                            <select
+                              value={newItemMarkerColor}
+                              onChange={(e) => setNewItemMarkerColor(e.target.value)}
+                              className="w-full h-8 px-2 rounded-lg bg-white border border-[#cbdbf5] text-xs text-[#0b1c30]"
+                            >
+                              <option value="none">None / General</option>
+                              <option value="black">Black</option>
+                              <option value="blue">Blue</option>
+                              <option value="red">Red</option>
+                              <option value="green">Green</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="text-[10px] uppercase font-bold text-[#426086] block mb-1">
+                              Qty
+                            </label>
+                            <input
+                              type="number"
+                              min={1}
+                              value={newItemQty}
+                              onChange={(e) => setNewItemQty(Number(e.target.value))}
+                              className="w-full h-8 px-2 rounded-lg bg-white border border-[#cbdbf5] text-xs font-mono text-[#0b1c30]"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] uppercase font-bold text-[#426086] block mb-1">
+                              Start Time
+                            </label>
+                            <input
+                              type="text"
+                              value={newItemStart}
+                              onChange={(e) => setNewItemStart(e.target.value)}
+                              className="w-full h-8 px-2 rounded-lg bg-white border border-[#cbdbf5] text-xs font-mono text-[#0b1c30]"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] uppercase font-bold text-[#426086] block mb-1">
+                              End Time
+                            </label>
+                            <input
+                              type="text"
+                              value={newItemEnd}
+                              onChange={(e) => setNewItemEnd(e.target.value)}
+                              className="w-full h-8 px-2 rounded-lg bg-white border border-[#cbdbf5] text-xs font-mono text-[#0b1c30]"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex justify-end">
+                          <button
+                            type="submit"
+                            disabled={savingCustody}
+                            className="px-3.5 py-1.5 rounded-lg bg-[#0e1c2f] hover:bg-[#426086] text-white text-xs font-bold flex items-center gap-1 cursor-pointer"
+                          >
+                            <span className="material-symbols-outlined text-[15px]">save</span>
+                            <span>{savingCustody ? 'Saving...' : 'Save Issued Item'}</span>
+                          </button>
+                        </div>
+                      </form>
+                    )}
+
                     <div className="border border-[#cbdbf5] rounded-xl overflow-hidden">
                       <table className="w-full text-left text-xs">
                         <thead>
@@ -2048,68 +2594,93 @@ export const FacultyCustodyStationeryView: React.FC<FacultyCustodyStationeryView
                             <th className="py-2 px-3 text-center">Qty</th>
                             <th className="py-2 px-3">Timing Window</th>
                             <th className="py-2 px-3 text-center">Status</th>
+                            {canManageCustody && <th className="py-2 px-3 text-right">Action</th>}
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-[#f1f5f9]">
-                          {selectedTeacherModal.items.map((item) => (
-                            <tr key={item.id} className="hover:bg-[#f8fafd]">
-                              <td className="py-2.5 px-3">
-                                <span className="font-bold text-[#0b1c30] block">{item.name}</span>
-                                <span className="font-mono text-[10px] text-[#72777f]">{item.assetCode}</span>
-                              </td>
-                              <td className="py-2.5 px-3">
-                                {item.markerColor ? (
-                                  <span
-                                    className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                                      item.markerColor === 'black'
-                                        ? 'bg-slate-900 text-white'
-                                        : item.markerColor === 'blue'
-                                        ? 'bg-blue-600 text-white'
-                                        : item.markerColor === 'red'
-                                        ? 'bg-rose-600 text-white'
-                                        : 'bg-emerald-600 text-white'
-                                    }`}
-                                  >
-                                    {item.markerColor}
-                                  </span>
-                                ) : (
-                                  <span className="text-[#426086] font-medium capitalize">{item.category}</span>
-                                )}
-                              </td>
-                              <td className="py-2.5 px-3 text-center font-mono font-bold text-[#0b1c30]">
-                                {item.quantity}
-                              </td>
-                              <td className="py-2.5 px-3 font-mono text-[11px] text-[#44474c]">
-                                {item.sessionStartTime} – {item.sessionEndTime}
-                              </td>
-                              <td className="py-2.5 px-3 text-center">
-                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                  In Custody
-                                </span>
+                          {selectedTeacherModal.items.length === 0 ? (
+                            <tr>
+                              <td colSpan={canManageCustody ? 6 : 5} className="py-6 text-center text-[#72777f]">
+                                No stationery or items currently issued to {selectedTeacherModal.facultyName}. Click &ldquo;Issue Stationery / Item&rdquo; above to assign.
                               </td>
                             </tr>
-                          ))}
+                          ) : (
+                            selectedTeacherModal.items.map((item) => (
+                              <tr key={item.id} className="hover:bg-[#f8fafd]">
+                                <td className="py-2.5 px-3">
+                                  <span className="font-bold text-[#0b1c30] block">{item.name}</span>
+                                  <span className="font-mono text-[10px] text-[#72777f]">{item.assetCode}</span>
+                                </td>
+                                <td className="py-2.5 px-3">
+                                  {item.markerColor ? (
+                                    <span
+                                      className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                        item.markerColor === 'black'
+                                          ? 'bg-slate-900 text-white'
+                                          : item.markerColor === 'blue'
+                                          ? 'bg-blue-600 text-white'
+                                          : item.markerColor === 'red'
+                                          ? 'bg-rose-600 text-white'
+                                          : 'bg-emerald-600 text-white'
+                                      }`}
+                                    >
+                                      {item.markerColor}
+                                    </span>
+                                  ) : (
+                                    <span className="text-[#426086] font-medium capitalize">{item.category}</span>
+                                  )}
+                                </td>
+                                <td className="py-2.5 px-3 text-center font-mono font-bold text-[#0b1c30]">
+                                  {item.quantity}
+                                </td>
+                                <td className="py-2.5 px-3 font-mono text-[11px] text-[#44474c]">
+                                  {item.sessionStartTime} – {item.sessionEndTime}
+                                </td>
+                                <td className="py-2.5 px-3 text-center">
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                    In Custody
+                                  </span>
+                                </td>
+                                {canManageCustody && (
+                                  <td className="py-2.5 px-3 text-right">
+                                    <button
+                                      type="button"
+                                      disabled={savingCustody}
+                                      onClick={() => handleRemoveSingleItem(selectedTeacherModal, item)}
+                                      className="px-2 py-1 rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-[10px] font-bold cursor-pointer"
+                                      title="Check in / remove this item permanently"
+                                    >
+                                      Check In / Remove
+                                    </button>
+                                  </td>
+                                )}
+                              </tr>
+                            ))
+                          )}
                         </tbody>
                       </table>
                     </div>
                   </div>
 
                   {/* Handover & Session End Action */}
-                  <div className="p-3.5 bg-amber-50/70 rounded-xl border border-amber-200 flex items-center justify-between">
-                    <div className="text-xs">
-                      <span className="font-bold text-amber-950 block">Conclude Lecture &amp; Check In</span>
-                      <span className="text-[11px] text-amber-900 mt-0.5 block">
-                        Record item return to Central Dispense and trigger automated alerts to waiting faculty.
-                      </span>
+                  {canManageCustody && selectedTeacherModal.items.length > 0 && (
+                    <div className="p-3.5 bg-amber-50/70 rounded-xl border border-amber-200 flex items-center justify-between gap-3">
+                      <div className="text-xs">
+                        <span className="font-bold text-amber-950 block">Conclude Lecture &amp; Check In All Items</span>
+                        <span className="text-[11px] text-amber-900 mt-0.5 block">
+                          Permanently clears all issued items for {selectedTeacherModal.facultyName} in Firestore and alerts waiting faculty.
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={savingCustody}
+                        onClick={() => handleReleaseFacultySession(selectedTeacherModal)}
+                        className="px-3.5 py-1.5 bg-[#0e1c2f] hover:bg-[#ba1a1a] text-white rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0"
+                      >
+                        Check In All
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => handleReleaseFacultySession(selectedTeacherModal)}
-                      className="px-3.5 py-1.5 bg-[#0e1c2f] hover:bg-[#ba1a1a] text-white rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0"
-                    >
-                      Conclude &amp; Alert
-                    </button>
-                  </div>
+                  )}
                 </>
               )}
 
@@ -2411,6 +2982,19 @@ export const FacultyCustodyStationeryView: React.FC<FacultyCustodyStationeryView
           </div>
         </div>
       )}
+      {/* Direct Admin / Office Staff Asset Allotment Modal */}
+      <DirectAllotModal
+        isOpen={isDirectAllotOpen}
+        initialFaculty={directAllotTarget}
+        facultyRoster={facultyRoster}
+        assets={assets}
+        bookings={bookings}
+        onClose={() => {
+          setIsDirectAllotOpen(false);
+          setDirectAllotTarget(null);
+        }}
+        onConfirmAllot={handleConfirmDirectAllot}
+      />
     </div>
   );
 };

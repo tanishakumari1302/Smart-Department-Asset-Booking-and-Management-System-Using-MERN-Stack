@@ -32,8 +32,6 @@ service cloud.firestore {
       return isSignedIn() && (
         request.auth.token.email in [
           'tanishakumari34703@gmail.com',
-          'harpreet.aulakh@sunstone.in',
-          'harpreet@sunstone.in',
           'malay@sunstone.in',
           'malay.aggarwal@college.edu',
           'malayaggarwal@gmail.com',
@@ -110,35 +108,35 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if true;
       allow create, update: if isValidUser(incoming());
-      allow delete: if isAdmin();
+      allow delete: if true;
     }
 
     // --- Staff Directory Collection ---
     match /staff_directory/{staffId} {
       allow read: if true;
       allow create, update: if isValidStaffMember(incoming());
-      allow delete: if isAdmin();
+      allow delete: if true;
     }
 
     // --- Assets Collection ---
     match /assets/{assetId} {
       allow read: if true;
       allow create, update: if isValidAsset(incoming());
-      allow delete: if isAdmin();
+      allow delete: if true;
     }
 
     // --- Bookings Collection ---
     match /bookings/{bookingId} {
       allow read: if true;
       allow create, update: if isValidBooking(incoming());
-      allow delete: if isAdmin() || isSignedIn();
+      allow delete: if true;
     }
 
     // --- Departments Collection ---
     match /departments/{deptId} {
       allow read: if true;
       allow create, update: if isValidDepartment(incoming());
-      allow delete: if isAdmin();
+      allow delete: if true;
     }
 
     // --- Audit Logs Collection (Immutable append-only, readable for governance) ---

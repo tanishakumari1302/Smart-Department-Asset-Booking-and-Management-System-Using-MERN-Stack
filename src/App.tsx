@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { User, Asset, AssetCondition, Booking, AuditLog, DashboardKPIs, ClusterInfo, Department, Role, StaffMember, AcademicSettings, calculateDefaultAcademicYear, isTabAllowedForRole, TAB_LABELS, ADMIN_OFFICE_STAFF, AUTHORIZED_FACULTY_MEMBERS } from './types';
+import { User, Asset, AssetCondition, Booking, AuditLog, DashboardKPIs, ClusterInfo, Department, Role, StaffMember, AcademicSettings, BrandingSettings, DEFAULT_BRANDING, calculateDefaultAcademicYear, isTabAllowedForRole, TAB_LABELS, ADMIN_OFFICE_STAFF, AUTHORIZED_FACULTY_MEMBERS } from './types';
 import { playBookingRequestSound, playBookingConfirmedSound, playAdminRequestReceivedSound } from './utils/soundUtils';
 import { detectPortalFromUrl, setPortalInUrl } from './utils/portalUtils';
 import {
@@ -15,6 +15,8 @@ import {
   subscribeToCurrentUser,
   subscribeToAcademicSettings,
   updateAcademicSettingsInFirestore,
+  subscribeToBrandingSettings,
+  updateBrandingSettingsInFirestore,
   updateUserRoleAndDepartment,
   addStaffMemberToFirestore,
   updateStaffMemberInFirestore,
@@ -31,6 +33,14 @@ import {
   cancelBookingInFirestore,
   createAssetInFirestore,
   adjustAssetStockInFirestore,
+  updateAssetInFirestore,
+  deleteAssetFromFirestore,
+  addDepartmentInFirestore,
+  updateDepartmentInFirestore,
+  deleteDepartmentFromFirestore,
+  createPermanentAllocationInFirestore,
+  updateBookingInFirestore,
+  deleteBookingFromFirestore,
   fetchOrCreateUserProfile,
 } from './firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
@@ -57,17 +67,28 @@ import { FloorplanModal } from './components/modals/FloorplanModal';
 import { AuthModal } from './components/modals/AuthModal';
 import { GuidelinesModal } from './components/modals/GuidelinesModal';
 import { AcademicSettingsModal } from './components/modals/AcademicSettingsModal';
+import { BrandingModal } from './components/modals/BrandingModal';
 import { ToastContainer, ToastMessage } from './components/Toast';
 import { printGatepassSlip, printCatalogSheet } from './utils/printUtils';
 
 export default function App() {
+  const normalizeSavedUser = (u: any): User | null => {
+    if (!u || typeof u !== 'object') return null;
+    const emailLower = String(u.email || '').toLowerCase().trim();
+    if (emailLower === 'harpreet.aulakh@sunstone.in' || emailLower === 'harpreet@sunstone.in') {
+      return { ...u, role: 'faculty' };
+    }
+    return u as User;
+  };
+
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
     try {
       if (typeof window !== 'undefined') {
         const portal = detectPortalFromUrl();
         const saved = localStorage.getItem('assethub_active_user');
         if (saved) {
-          const u = JSON.parse(saved);
+          const u = normalizeSavedUser(JSON.parse(saved));
+          if (!u) return null;
           if (portal === 'faculty') {
             if (u.role === 'faculty') return u;
             return null;
@@ -138,9 +159,11 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
 
-  // Academic calendar settings state
+  // Academic calendar & college branding settings state
   const [academicSettings, setAcademicSettings] = useState<AcademicSettings>(calculateDefaultAcademicYear());
   const [isAcademicSettingsModalOpen, setIsAcademicSettingsModalOpen] = useState(false);
+  const [branding, setBranding] = useState<BrandingSettings>(DEFAULT_BRANDING);
+  const [isBrandingModalOpen, setIsBrandingModalOpen] = useState(false);
 
   // Modals state
   const [rejectModalBooking, setRejectModalBooking] = useState<Booking | null>(null);
@@ -349,6 +372,18 @@ export default function App() {
       setAcademicSettings(settings);
     });
 
+    const unsubBranding = subscribeToBrandingSettings((liveBranding) => {
+      setBranding(liveBranding);
+      if (typeof document !== 'undefined' && liveBranding.appName) {
+        document.title = `${liveBranding.appName} — ${liveBranding.collegeSubtitle || 'College Asset Mgmt'}`;
+      }
+    });
+
+    // Global live Staff Directory listener so LoginScreen, FaceAuthModal & Header stay synced in real time
+    const unsubGlobalStaff = subscribeToStaffDirectory((liveStaff) => {
+      setStaffDirectory(liveStaff);
+    });
+
     const setupFirebase = async () => {
       // Unblock loading state rapidly so users see UI immediately even on slow/cold connections
       const timeoutId = setTimeout(() => {
@@ -372,6 +407,8 @@ export default function App() {
       if (unsubAssets) unsubAssets();
       if (unsubDepts) unsubDepts();
       if (unsubAcademic) unsubAcademic();
+      if (unsubBranding) unsubBranding();
+      if (unsubGlobalStaff) unsubGlobalStaff();
     };
   }, []);
 
@@ -534,8 +571,10 @@ export default function App() {
           const portal = detectPortalFromUrl();
           const saved = localStorage.getItem('assethub_active_user');
           if (saved) {
-            const parsed = JSON.parse(saved);
-            if (portal === 'faculty' && parsed.role !== 'faculty') {
+            const parsed = normalizeSavedUser(JSON.parse(saved));
+            if (!parsed) {
+              setCurrentUser(null);
+            } else if (portal === 'faculty' && parsed.role !== 'faculty') {
               setCurrentUser(null);
             } else if (portal === 'admin' && parsed.role !== 'admin') {
               setCurrentUser(null);
@@ -611,21 +650,7 @@ export default function App() {
     };
   }, [currentUser?.id, currentUser?.role, currentUser?.department]);
 
-  // Staff Directory subscription: only active for admin and hod
-  useEffect(() => {
-    if (!currentUser || (currentUser.role !== 'admin' && currentUser.role !== 'hod')) {
-      setStaffDirectory([]);
-      return;
-    }
-
-    const unsubStaff = subscribeToStaffDirectory((liveStaff) => {
-      setStaffDirectory(liveStaff);
-    }, currentUser);
-
-    return () => {
-      if (unsubStaff) unsubStaff();
-    };
-  }, [currentUser?.id, currentUser?.role, currentUser?.department]);
+  // Staff Directory is subscribed globally in the initialization useEffect so LoginScreen stays synced.
 
   // Audit Logs subscription: only active for admin and hod
   useEffect(() => {
@@ -662,7 +687,8 @@ export default function App() {
     targetUserId: string,
     newRole: Role,
     newDepartment: string,
-    newDesignation?: string
+    newDesignation?: string,
+    fallbackUser?: Partial<User>
   ) => {
     if (!currentUser || currentUser.role !== 'admin') {
       throw new Error('Only administrators can modify roles and departments.');
@@ -672,7 +698,8 @@ export default function App() {
       newRole,
       newDepartment,
       newDesignation,
-      currentUser
+      currentUser,
+      fallbackUser
     );
   };
 
@@ -683,6 +710,9 @@ export default function App() {
     role: Role;
     department: string;
     designation?: string;
+    businessRole?: string;
+    phone?: string;
+    room?: string;
   }) => {
     if (!currentUser || currentUser.role !== 'admin') {
       throw new Error('Only administrators can add staff directory members.');
@@ -690,18 +720,87 @@ export default function App() {
     await addStaffMemberToFirestore(staffData, currentUser);
   };
 
-  const handleUpdateStaffMember = async (staffId: string, updates: Partial<StaffMember>) => {
+  const handleUpdateStaffMember = async (
+    staffId: string,
+    updates: Partial<StaffMember>,
+    fallbackData?: Partial<StaffMember>
+  ) => {
     if (!currentUser || currentUser.role !== 'admin') {
       throw new Error('Only administrators can update staff directory members.');
     }
-    await updateStaffMemberInFirestore(staffId, updates, currentUser);
+    await updateStaffMemberInFirestore(staffId, updates, currentUser, fallbackData);
   };
 
-  const handleDeleteStaffMember = async (staffId: string) => {
+  const handleDeleteStaffMember = async (staffId: string, staffMeta?: Partial<StaffMember>) => {
     if (!currentUser || currentUser.role !== 'admin') {
       throw new Error('Only administrators can delete staff directory members.');
     }
-    await deleteStaffMemberFromFirestore(staffId, currentUser);
+    await deleteStaffMemberFromFirestore(staffId, currentUser, staffMeta);
+  };
+
+  // Department CRUD handlers
+  const handleAddDepartment = async (deptData: {
+    name: string;
+    code: string;
+    buildingBlock?: string;
+    hodName?: string;
+    description?: string;
+  }) => {
+    if (!currentUser || currentUser.role !== 'admin') {
+      throw new Error('Only administrators can add departments.');
+    }
+    await addDepartmentInFirestore(deptData, currentUser);
+  };
+
+  const handleUpdateDepartment = async (deptId: string, updates: Partial<Department>) => {
+    if (!currentUser || currentUser.role !== 'admin') {
+      throw new Error('Only administrators can edit departments.');
+    }
+    await updateDepartmentInFirestore(deptId, updates, currentUser);
+  };
+
+  const handleDeleteDepartment = async (deptId: string) => {
+    if (!currentUser || currentUser.role !== 'admin') {
+      throw new Error('Only administrators can delete departments.');
+    }
+    await deleteDepartmentFromFirestore(deptId, currentUser);
+  };
+
+  // Permanent Allocations & Booking CRUD handlers
+  const handleAddPermanentAllocation = async (data: {
+    assetCode: string;
+    assetName: string;
+    requesterName: string;
+    requesterEmail?: string;
+    requesterRole?: string;
+    requesterDept?: string;
+    venue: string;
+    grantId?: string;
+    tenancyDuration?: string;
+    quantity?: number;
+    status?: Booking['status'];
+    purpose?: string;
+    remarks?: string;
+  }) => {
+    if (!currentUser || currentUser.role !== 'admin') {
+      throw new Error('Only administrators can assign permanent allocations.');
+    }
+    await createPermanentAllocationInFirestore(data, currentUser);
+  };
+
+  const handleUpdateBooking = async (reqId: string, updates: Partial<Booking>) => {
+    if (!currentUser || currentUser.role !== 'admin') {
+      throw new Error('Only administrators can edit booking records.');
+    }
+    await updateBookingInFirestore(reqId, updates, currentUser);
+  };
+
+  const handleDeleteBooking = async (reqId: string) => {
+    if (!currentUser || currentUser.role !== 'admin') {
+      throw new Error('Only administrators can delete booking records.');
+    }
+    await deleteBookingFromFirestore(reqId, currentUser);
+    showToast(`Removed record ${reqId} from ledger`, 'info');
   };
 
   const handleBulkImportStaff = async (rawText: string, defaultDept: string) => {
@@ -855,6 +954,28 @@ export default function App() {
     }
   };
 
+  // Full Asset Edit in Firestore
+  const handleSaveFullAsset = async (code: string, updates: Partial<Asset>) => {
+    if (!currentUser) return;
+    try {
+      await updateAssetInFirestore(code, updates, currentUser);
+      showToast(`Saved all changes for asset ${code}`, 'success');
+    } catch (err: any) {
+      showToast(err.message || 'Asset update failed', 'warning');
+    }
+  };
+
+  // Delete Asset in Firestore
+  const handleDeleteAsset = async (code: string) => {
+    if (!currentUser) return;
+    try {
+      await deleteAssetFromFirestore(code, currentUser);
+      showToast(`Deleted asset ${code} from catalog`, 'info');
+    } catch (err: any) {
+      showToast(err.message || 'Failed to delete asset', 'warning');
+    }
+  };
+
   // Create new Asset in Firestore
   const handleAssetCreated = async (assetData: Partial<Asset>) => {
     if (!currentUser) return;
@@ -949,6 +1070,7 @@ export default function App() {
       <>
         <LoginScreen
           departments={departments}
+          staffDirectory={staffDirectory}
           academicSettings={academicSettings}
           onUserAuthenticated={handleSelectUser}
           showToast={showToast}
@@ -977,6 +1099,8 @@ export default function App() {
         assignedAssetsCount={scopedBookings.filter((b) => b.type === 'permanent' && b.status === 'approved').length || 1}
         cluster={cluster}
         academicSettings={academicSettings}
+        branding={branding}
+        onOpenBrandingModal={() => setIsBrandingModalOpen(true)}
         isMobileOpen={isMobileNavOpen}
         onCloseMobile={() => setIsMobileNavOpen(false)}
         realUserRole={currentUser?.role}
@@ -1007,6 +1131,7 @@ export default function App() {
           onSelectNavTab={handleNavigateNavTab}
           bookings={scopedBookings}
           assets={scopedAssets}
+          staffDirectory={staffDirectory}
           showToast={showToast}
         />
 
@@ -1178,9 +1303,13 @@ export default function App() {
                   {currentTab === 'request-approvals' && (
                     <ApprovalsView
                       bookings={scopedBookings}
+                      isAdmin={effectiveUser?.role === 'admin'}
                       onApprove={handleApproveBooking}
                       onOpenRejectModal={(b) => setRejectModalBooking(b)}
                       onOpenGatepass={(b) => setGatepassModalBooking(b)}
+                      onUpdateBooking={handleUpdateBooking}
+                      onDeleteBooking={handleDeleteBooking}
+                      showToast={showToast}
                     />
                   )}
 
@@ -1189,6 +1318,7 @@ export default function App() {
                       currentUser={effectiveUser}
                       assets={scopedAssets}
                       bookings={scopedBookings}
+                      staffDirectory={staffDirectory}
                       academicSettings={academicSettings}
                       onOpenGatepass={(b) => setGatepassModalBooking(b)}
                       showToast={showToast}
@@ -1222,9 +1352,12 @@ export default function App() {
                   {currentTab === 'issue-and-return-desk' && (
                     <IssueReturnDeskView
                       bookings={scopedBookings}
+                      isAdmin={effectiveUser?.role === 'admin'}
                       onDispatch={handleDispatchBooking}
                       onReturn={handleReturnBooking}
                       onOpenGatepass={(b) => setGatepassModalBooking(b)}
+                      onUpdateBooking={handleUpdateBooking}
+                      onDeleteBooking={handleDeleteBooking}
                       showToast={showToast}
                     />
                   )}
@@ -1233,15 +1366,26 @@ export default function App() {
                     <PermanentAllocationsView
                       bookings={scopedBookings}
                       assets={scopedAssets}
+                      currentUser={effectiveUser}
+                      staffDirectory={staffDirectory}
                       onOpenGatepass={(b) => setGatepassModalBooking(b)}
+                      onAddPermanentAllocation={handleAddPermanentAllocation}
+                      onUpdateBooking={handleUpdateBooking}
+                      onDeleteBooking={handleDeleteBooking}
+                      showToast={showToast}
                     />
                   )}
 
                   {currentTab === 'categories-and-barcodes' && (
                     <BarcodesView
                       assets={scopedAssets}
+                      currentUser={effectiveUser}
                       onOpenScanner={() => setIsScannerModalOpen(true)}
                       onPrintAllTags={() => handlePrintSlip('Barcode Tags')}
+                      onUpdateAsset={handleSaveFullAsset}
+                      onDeleteAsset={handleDeleteAsset}
+                      onOpenNewAssetModal={() => setIsNewAssetModalOpen(true)}
+                      showToast={showToast}
                     />
                   )}
 
@@ -1259,6 +1403,9 @@ export default function App() {
                       onBulkImportStaff={handleBulkImportStaff}
                       onApproveUser={handleApproveUser}
                       onRejectUser={handleRejectUser}
+                      onAddDepartment={handleAddDepartment}
+                      onUpdateDepartment={handleUpdateDepartment}
+                      onDeleteDepartment={handleDeleteDepartment}
                       onOpenAuthModal={() => setIsAuthModalOpen(true)}
                       onOpenAcademicSettingsModal={() => setIsAcademicSettingsModalOpen(true)}
                       showToast={showToast}
@@ -1301,8 +1448,11 @@ export default function App() {
       <StockAdjustModal
         isOpen={!!stockAdjustAsset}
         asset={stockAdjustAsset}
+        departments={departments}
         onClose={() => setStockAdjustAsset(null)}
         onConfirmAdjust={handleConfirmAdjustStock}
+        onSaveFullAsset={handleSaveFullAsset}
+        onDeleteAsset={handleDeleteAsset}
       />
 
       <NewAssetModal
@@ -1345,6 +1495,20 @@ export default function App() {
         academicSettings={academicSettings}
         onSaveAcademicSettings={handleSaveAcademicSettings}
         showToast={showToast}
+      />
+
+      <BrandingModal
+        isOpen={isBrandingModalOpen}
+        branding={branding}
+        onClose={() => setIsBrandingModalOpen(false)}
+        onSaveBranding={async (updates) => {
+          try {
+            await updateBrandingSettingsInFirestore(updates, currentUser);
+            showToast(`Updated college branding to "${updates.appName || branding.appName}"`, 'success');
+          } catch (err: any) {
+            showToast(err.message || 'Failed to save branding', 'warning');
+          }
+        }}
       />
 
       <AuthModal

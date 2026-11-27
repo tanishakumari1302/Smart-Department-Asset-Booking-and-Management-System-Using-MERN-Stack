@@ -1,13 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Department,
   User,
+  StaffMember,
   AcademicSettings,
   calculateDefaultAcademicYear,
-  ADMIN_OFFICE_STAFF,
-  AUTHORIZED_FACULTY_MEMBERS,
-  INSTITUTIONAL_LEADERSHIP,
-  ALL_INSTITUTIONAL_MEMBERS,
+  buildMergedStaffLists,
 } from '../types';
 import { auth, googleProvider, fetchOrCreateUserProfile } from '../firebase';
 import {
@@ -21,6 +19,7 @@ import { SharePortalModal } from './SharePortalModal';
 
 interface LoginScreenProps {
   departments: Department[];
+  staffDirectory?: StaffMember[];
   academicSettings?: AcademicSettings;
   onUserAuthenticated: (user: User) => void;
   showToast?: (text: string, type: 'success' | 'warning' | 'info') => void;
@@ -29,11 +28,17 @@ interface LoginScreenProps {
 
 export const LoginScreen: React.FC<LoginScreenProps> = ({
   departments,
+  staffDirectory = [],
   academicSettings,
   onUserAuthenticated,
   showToast,
   lockedPortal,
 }) => {
+  const { admins: liveAdmins, faculty: liveFaculty } = useMemo(
+    () => buildMergedStaffLists(staffDirectory),
+    [staffDirectory]
+  );
+
   const urlPortal = detectPortalFromUrl();
   const effectivePortalLock = lockedPortal || urlPortal;
   const isFacultyOnlyMode = effectivePortalLock === 'faculty';
@@ -113,21 +118,21 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     }
   };
 
-  // 1-Click Fast Sign-In for Faculty (10 Authorized Faculty Members)
+  // 1-Click Fast Sign-In for Faculty (Strictly Faculty Role Only)
   const handleQuickFacultyLogin = async (facultyMember: User) => {
     setLoading(true);
     setErrorMsg('');
     try {
       const facUser: User = {
         ...facultyMember,
-        role: facultyMember.role === 'admin' ? 'admin' : 'faculty',
+        role: 'faculty',
         approvalStatus: 'approved',
       };
       onUserAuthenticated(facUser);
       localStorage.setItem('assethub_active_user', JSON.stringify(facUser));
       if (showToast) {
         showToast(
-          `Signed in as ${facultyMember.name} (${facUser.role === 'admin' ? 'DUAL ACCESS: Faculty & Admin' : 'FACULTY'})`,
+          `Signed in as ${facultyMember.name} (FACULTY PORTAL)`,
           'success'
         );
       }
@@ -136,6 +141,25 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     } finally {
       setLoading(false);
     }
+  };
+
+  // Helper to check if email belongs to an authorized Admin / Office Staff member
+  const isEmailAuthorizedAdmin = (emailStr: string): boolean => {
+    const clean = emailStr.trim().toLowerCase();
+    if (!clean) return false;
+    if (
+      clean === 'malay@sunstone.in' ||
+      clean === 'arpit.singh@sunstone.in' ||
+      clean === 'arpitsingh@gmail.com' ||
+      clean === 'arpit.singh@college.edu' ||
+      clean === 'malay.aggarwal@college.edu' ||
+      clean === 'malayaggarwal@gmail.com' ||
+      clean === 'tanishakumari34703@gmail.com' ||
+      clean.startsWith('tanishakumari')
+    ) {
+      return true;
+    }
+    return liveAdmins.some((a) => a.email.toLowerCase() === clean);
   };
 
   // Google Sign-In with strict portal-based role assignment
@@ -147,15 +171,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       const userProfile = await fetchOrCreateUserProfile(result.user);
 
       const emailLower = (result.user.email || '').toLowerCase().trim();
-      const isRegisteredAdmin =
-        emailLower === 'malay@sunstone.in' ||
-        emailLower === 'arpit.singh@sunstone.in' ||
-        emailLower === 'arpitsingh@gmail.com' ||
-        emailLower === 'arpit.singh@college.edu' ||
-        emailLower === 'malay.aggarwal@college.edu' ||
-        emailLower === 'malayaggarwal@gmail.com' ||
-        emailLower === 'tanishakumari34703@gmail.com' ||
-        emailLower.startsWith('tanishakumari');
+      const isRegisteredAdmin = isEmailAuthorizedAdmin(emailLower);
 
       if (portal === 'faculty') {
         // Enforce faculty role for faculty portal login
@@ -173,7 +189,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       if (portal === 'admin') {
         if (!isRegisteredAdmin && userProfile.role !== 'admin') {
           setErrorMsg(
-            'Access Restricted: Admin & Office Staff portal is reserved for Malay Aggarwal & Arpit Singh only. Please switch to the Faculty Portal tab to enter.'
+            'Access Restricted: Admin & Office Staff portal is reserved for authorized Admin/Office Staff only (Malay Aggarwal, Arpit Singh, or staff added by Admin). Please switch to the Faculty Portal tab to enter.'
           );
           return;
         }
@@ -201,19 +217,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     }
 
     const trimmedEmail = email.trim().toLowerCase();
-    const isRegisteredAdmin =
-      trimmedEmail === 'malay@sunstone.in' ||
-      trimmedEmail === 'arpit.singh@sunstone.in' ||
-      trimmedEmail === 'arpitsingh@gmail.com' ||
-      trimmedEmail === 'arpit.singh@college.edu' ||
-      trimmedEmail === 'malay.aggarwal@college.edu' ||
-      trimmedEmail === 'malayaggarwal@gmail.com' ||
-      trimmedEmail === 'tanishakumari34703@gmail.com';
+    const isRegisteredAdmin = isEmailAuthorizedAdmin(trimmedEmail);
 
     // Role portal check
     if (portal === 'admin' && !isRegisteredAdmin) {
       setErrorMsg(
-        'Access Restricted: Admin & Office Staff portal is reserved exclusively for Malay Aggarwal and Arpit Singh. For faculty access, please select the Faculty Portal tab.'
+        'Access Restricted: Admin & Office Staff portal is reserved exclusively for authorized Admin/Office Staff. For faculty access, please select the Faculty Portal tab.'
       );
       return;
     }
@@ -237,16 +246,25 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         );
       }
     } catch (err: any) {
-      // Check if this matches a predefined demo credential
-      const matchedAdmin = ADMIN_OFFICE_STAFF.find((a) => a.email.toLowerCase() === trimmedEmail);
-      const matchedFaculty = AUTHORIZED_FACULTY_MEMBERS.find((f) => f.email.toLowerCase() === trimmedEmail);
+      // Check if this matches a live staff or faculty directory record
+      const matchedAdmin = liveAdmins.find((a) => a.email.toLowerCase() === trimmedEmail);
+      const matchedFaculty = liveFaculty.find((f) => f.email.toLowerCase() === trimmedEmail);
 
       if (portal === 'faculty') {
-        const facTarget = matchedFaculty || {
-          ...AUTHORIZED_FACULTY_MEMBERS[0],
-          email: trimmedEmail,
-          name: trimmedEmail.split('@')[0],
-        };
+        const facTarget: User = matchedFaculty
+          ? { ...matchedFaculty, role: 'faculty', approvalStatus: 'approved' }
+          : {
+              _id: `fac_${Date.now()}`,
+              id: `fac_${Date.now()}`,
+              name: trimmedEmail.split('@')[0],
+              email: trimmedEmail,
+              role: 'faculty',
+              approvalStatus: 'approved',
+              department: departments[0]?.name || 'Department of Computer Science & Engineering',
+              designation: 'Faculty Member',
+              businessRole: 'Academic Faculty',
+              facultyId: `SUN-FAC-${Math.floor(100 + Math.random() * 900)}`,
+            };
         onUserAuthenticated(facTarget);
         localStorage.setItem('assethub_active_user', JSON.stringify(facTarget));
         if (showToast) {
@@ -256,18 +274,20 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       }
 
       if (portal === 'admin' && (matchedAdmin || isRegisteredAdmin)) {
-        const adminTarget: User = matchedAdmin || {
-          _id: 'usr_admin_tanisha',
-          id: 'usr_admin_tanisha',
-          name: 'Tanisha Kumari',
-          email: trimmedEmail,
-          role: 'admin',
-          approvalStatus: 'approved',
-          department: 'Central Administration & Institutional Oversight',
-          designation: 'College ERP Administrator',
-          businessRole: 'System Administrator',
-          facultyId: 'SUN-ADMIN-MASTER',
-        };
+        const adminTarget: User = matchedAdmin
+          ? { ...matchedAdmin, role: 'admin', approvalStatus: 'approved' }
+          : {
+              _id: 'usr_admin_tanisha',
+              id: 'usr_admin_tanisha',
+              name: 'Tanisha Kumari',
+              email: trimmedEmail,
+              role: 'admin',
+              approvalStatus: 'approved',
+              department: 'Central Administration & Institutional Oversight',
+              designation: 'College ERP Administrator',
+              businessRole: 'System Administrator',
+              facultyId: 'SUN-ADMIN-MASTER',
+            };
         onUserAuthenticated(adminTarget);
         localStorage.setItem('assethub_active_user', JSON.stringify(adminTarget));
         if (showToast) {
@@ -349,7 +369,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             <span className="material-symbols-outlined text-[20px] text-[#75f5fd]">school</span>
             <span>Sunstone Institutional Faculty Portal</span>
             <span className="px-2 py-0.5 rounded-full bg-white/10 text-teal-300 text-[10px] font-mono">
-              14 Faculty Members
+              {liveFaculty.length} Faculty Members
             </span>
           </div>
         </div>
@@ -359,14 +379,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             <span className="material-symbols-outlined text-[20px] text-[#75f5fd]">admin_panel_settings</span>
             <span>Admin &amp; Office Staff Command Center</span>
             <span className="px-2 py-0.5 rounded-full bg-white/10 text-teal-300 text-[10px] font-mono">
-              Malay Aggarwal &amp; Arpit Singh
-            </span>
-            <span className="px-2 py-0.5 rounded-full bg-[#009299]/30 text-teal-200 text-[10px] font-bold">
-              Dual Access
+              {liveAdmins.map((a) => a.name).slice(0, 2).join(' & ')}
+              {liveAdmins.length > 2 ? ` +${liveAdmins.length - 2}` : ''}
             </span>
           </div>
           <span className="text-[11px] text-[#426086]">
-            Campus Operations &amp; Inventory Management • Includes Faculty Desk View Switcher
+            Full Self-Service Inventory, Faculty Directory, Permanent Allocations &amp; Approvals Control
           </span>
         </div>
       ) : (
@@ -391,12 +409,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               <div className="flex flex-col text-left">
                 <span>Faculty Portal Login</span>
                 <span className={`text-[10px] font-normal ${portal === 'faculty' ? 'text-teal-300' : 'text-[#77849c]'}`}>
-                  14 Authorized Faculty Members
+                  {liveFaculty.length} Authorized Faculty Members
                 </span>
               </div>
             </button>
 
-            {/* TAB 2: ADMIN & OFFICE STAFF (Right / Restricted to 2 People) */}
+            {/* TAB 2: ADMIN & OFFICE STAFF */}
             <button
               type="button"
               onClick={() => {
@@ -415,7 +433,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               <div className="flex flex-col text-left">
                 <span>Admin &amp; Office Staff</span>
                 <span className={`text-[10px] font-normal ${portal === 'admin' ? 'text-teal-300' : 'text-[#77849c]'}`}>
-                  Malay Aggarwal &amp; Arpit Singh only
+                  {liveAdmins.map((a) => a.name.split(' ')[0]).slice(0, 2).join(' & ')}
+                  {liveAdmins.length > 2 ? ` +${liveAdmins.length - 2}` : ' only'}
                 </span>
               </div>
             </button>
@@ -580,7 +599,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                   onClick={() => setShowFacultyDemoList(!showFacultyDemoList)}
                   className="text-xs text-[#009299] hover:underline font-semibold flex items-center gap-1 cursor-pointer"
                 >
-                  <span>{showFacultyDemoList ? 'Hide Demo Names' : `Show Faculty Members (${AUTHORIZED_FACULTY_MEMBERS.length})`}</span>
+                  <span>{showFacultyDemoList ? 'Hide Demo Names' : `Show Faculty Members (${liveFaculty.length})`}</span>
                   <span className="material-symbols-outlined text-[16px]">
                     {showFacultyDemoList ? 'expand_less' : 'expand_more'}
                   </span>
@@ -593,7 +612,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                   value={selectedDemoFacultyId}
                   onChange={(e) => {
                     const val = e.target.value;
-                    const fac = AUTHORIZED_FACULTY_MEMBERS.find((f) => f.id === val);
+                    const fac = liveFaculty.find((f) => f.id === val);
                     if (fac) {
                       setSelectedDemoFacultyId(fac.id || '');
                       handleQuickFacultyLogin(fac);
@@ -601,10 +620,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                   }}
                   className="w-full h-9 px-2.5 rounded-lg border border-[#cbdbf5] bg-white text-xs text-[#0b1c30] focus:outline-none focus:border-[#009299] cursor-pointer"
                 >
-                  <option value="">-- Choose Academic Faculty Member ({AUTHORIZED_FACULTY_MEMBERS.length}) --</option>
-                  {AUTHORIZED_FACULTY_MEMBERS.map((fac) => (
+                  <option value="">-- Choose Academic Faculty Member ({liveFaculty.length}) --</option>
+                  {liveFaculty.map((fac) => (
                     <option key={fac.id} value={fac.id}>
-                      {fac.name} • {fac.designation} [{fac.businessRole}] ({fac.email})
+                      {fac.name} • {fac.designation} [{fac.businessRole || 'Faculty'}] ({fac.email})
                     </option>
                   ))}
                 </select>
@@ -615,32 +634,25 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                     <span className="material-symbols-outlined text-[14px] text-[#009299]">school</span>
                     Fast 1-Click:
                   </span>
-                  {AUTHORIZED_FACULTY_MEMBERS.slice(0, 5).map((fac) => {
-                    const isDualAdmin = fac.role === 'admin';
-                    return (
-                      <button
-                        key={`fast_fac_btn_${fac.id}`}
-                        type="button"
-                        onClick={() => handleQuickFacultyLogin(fac)}
-                        className={`px-2.5 py-1 rounded-lg font-bold text-[11px] border flex items-center gap-1 transition-all cursor-pointer shadow-2xs ${
-                          isDualAdmin
-                            ? 'bg-[#009299] text-white hover:bg-[#007b80] border-[#009299]'
-                            : 'bg-[#eff4ff] hover:bg-[#dce9ff] text-[#009299] hover:text-[#007b80] border-[#cbdbf5]'
-                        }`}
-                        title={isDualAdmin ? `${fac.name} (Associate Director - Faculty Requisitions + Admin Approvals)` : fac.name}
-                      >
-                        <span className={`w-1.5 h-1.5 rounded-full ${isDualAdmin ? 'bg-cyan-200' : 'bg-[#009299]'}`}></span>
-                        <span>{fac.name === 'Harpreet Aulakh' ? 'Harpreet Aulakh (Dual)' : fac.name.split(' ')[0]}</span>
-                      </button>
-                    );
-                  })}
+                  {liveFaculty.slice(0, 5).map((fac) => (
+                    <button
+                      key={`fast_fac_btn_${fac.id}`}
+                      type="button"
+                      onClick={() => handleQuickFacultyLogin(fac)}
+                      className="px-2.5 py-1 rounded-lg font-bold text-[11px] border flex items-center gap-1 transition-all cursor-pointer shadow-2xs bg-[#eff4ff] hover:bg-[#dce9ff] text-[#009299] hover:text-[#007b80] border-[#cbdbf5]"
+                      title={`${fac.name} — Faculty Portal`}
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#009299]"></span>
+                      <span>{fac.name.split(' ')[0]}</span>
+                    </button>
+                  ))}
                 </div>
               </div>
 
-              {/* Collapsible 12 Faculty Cards Grid (Hidden by default) */}
+              {/* Collapsible Faculty Cards Grid */}
               {showFacultyDemoList && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2 max-h-[300px] overflow-y-auto pr-1">
-                  {AUTHORIZED_FACULTY_MEMBERS.map((fac) => (
+                  {liveFaculty.map((fac) => (
                     <button
                       key={fac.id}
                       type="button"
@@ -649,7 +661,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                       className="p-2.5 rounded-xl border border-[#cbdbf5] hover:border-[#009299] bg-white hover:bg-[#eff4ff] transition-all text-left flex items-center gap-2.5 shadow-2xs cursor-pointer group disabled:opacity-50"
                     >
                       <img
-                        src={fac.avatar}
+                        src={fac.avatar || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(fac.name)}`}
                         alt={fac.name}
                         className="w-9 h-9 rounded-full object-cover shrink-0 border border-teal-200"
                       />
@@ -858,7 +870,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                   onClick={() => setShowAdminDemoList(!showAdminDemoList)}
                   className="text-xs text-[#009299] hover:underline font-semibold flex items-center gap-1 cursor-pointer"
                 >
-                  <span>{showAdminDemoList ? 'Hide Admin Officers' : `Show Admin Officers (${ADMIN_OFFICE_STAFF.length})`}</span>
+                  <span>{showAdminDemoList ? 'Hide Admin Officers' : `Show Admin Officers (${liveAdmins.length})`}</span>
                   <span className="material-symbols-outlined text-[16px]">
                     {showAdminDemoList ? 'expand_less' : 'expand_more'}
                   </span>
@@ -870,7 +882,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 <select
                   value={selectedDemoAdminId}
                   onChange={(e) => {
-                    const foundUser = ADMIN_OFFICE_STAFF.find((s) => s.id === e.target.value);
+                    const foundUser = liveAdmins.find((s) => s.id === e.target.value);
                     if (foundUser) {
                       setSelectedDemoAdminId(foundUser.id || '');
                       handleQuickAdminLogin(foundUser);
@@ -879,49 +891,40 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                   className="w-full h-9 px-2.5 rounded-lg border border-[#cbdbf5] bg-white text-xs text-[#0b1c30] focus:outline-none focus:border-[#009299] cursor-pointer"
                 >
                   <option value="">-- Direct 1-Click Access: Choose Admin Officer --</option>
-                  {ADMIN_OFFICE_STAFF.map((staff) => (
+                  {liveAdmins.map((staff) => (
                     <option key={staff.id} value={staff.id}>
-                      ⚡ Direct Access: {staff.name} • {staff.designation} [{staff.businessRole}] ({staff.email})
+                      ⚡ Direct Access: {staff.name} • {staff.designation} [{staff.businessRole || 'Admin'}] ({staff.email})
                     </option>
                   ))}
                 </select>
               </div>
 
-              {/* Fast 1-Click Buttons */}
+              {/* Fast 1-Click Buttons (Strictly Live Admin & Office Staff) */}
               <div className="flex flex-wrap items-center gap-2 pt-1">
                 <span className="text-[11px] font-bold text-[#426086] shrink-0">1-Click Fast Enter:</span>
-                <button
-                  type="button"
-                  onClick={() => handleQuickAdminLogin(ADMIN_OFFICE_STAFF[0])}
-                  className="px-3.5 py-1.5 bg-[#0e1c2f] hover:bg-[#1a2f4c] text-white rounded-lg text-xs font-bold flex items-center gap-2 shadow-2xs cursor-pointer transition-colors"
-                >
-                  <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                  <span>Malay Aggarwal (AVP / Admin)</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleQuickAdminLogin(ADMIN_OFFICE_STAFF[1])}
-                  className="px-3.5 py-1.5 bg-[#004f55] hover:bg-[#003d42] text-white rounded-lg text-xs font-bold flex items-center gap-2 shadow-2xs cursor-pointer transition-colors"
-                >
-                  <span className="w-2 h-2 rounded-full bg-teal-300"></span>
-                  <span>Arpit Singh (Campus Manager)</span>
-                </button>
-                {ADMIN_OFFICE_STAFF[2] && (
+                {liveAdmins.map((staff, idx) => (
                   <button
+                    key={staff.id || staff.email}
                     type="button"
-                    onClick={() => handleQuickAdminLogin(ADMIN_OFFICE_STAFF[2])}
-                    className="px-3.5 py-1.5 bg-[#426086] hover:bg-[#2e4766] text-white rounded-lg text-xs font-bold flex items-center gap-2 shadow-2xs cursor-pointer transition-colors"
+                    onClick={() => handleQuickAdminLogin(staff)}
+                    className={`px-3.5 py-1.5 text-white rounded-lg text-xs font-bold flex items-center gap-2 shadow-2xs cursor-pointer transition-colors ${
+                      idx % 2 === 0
+                        ? 'bg-[#0e1c2f] hover:bg-[#1a2f4c]'
+                        : 'bg-[#004f55] hover:bg-[#003d42]'
+                    }`}
                   >
-                    <span className="w-2 h-2 rounded-full bg-cyan-300"></span>
-                    <span>Harpreet Aulakh (Associate Director)</span>
+                    <span className={`w-2 h-2 rounded-full ${idx % 2 === 0 ? 'bg-emerald-400' : 'bg-teal-300'}`}></span>
+                    <span>
+                      {staff.name} ({staff.businessRole || staff.designation || 'Admin'})
+                    </span>
                   </button>
-                )}
+                ))}
               </div>
 
               {/* Collapsible Admin Officers Grid */}
               {showAdminDemoList && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 mt-2">
-                  {ADMIN_OFFICE_STAFF.map((staff) => (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mt-2">
+                  {liveAdmins.map((staff) => (
                     <button
                       key={staff.id}
                       type="button"
@@ -930,7 +933,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                       className="p-3 rounded-xl border-2 border-[#cbdbf5] hover:border-[#0e1c2f] bg-white hover:bg-[#eff4ff]/60 transition-all text-left flex items-center gap-2.5 shadow-xs hover:shadow-md cursor-pointer group disabled:opacity-50"
                     >
                       <img
-                        src={staff.avatar}
+                        src={staff.avatar || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(staff.name)}`}
                         alt={staff.name}
                         className="w-10 h-10 rounded-full object-cover shrink-0 border border-gray-200"
                       />
@@ -1007,7 +1010,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
       {/* College ERP footer note */}
       <div className="mt-3 text-center text-xs text-[#77849c]">
-        <span>Protected Institutional Portal • Firebase Firestore RBAC Secured • 3 Admin Custodians &amp; 13 Faculty Members</span>
+        <span>
+          Protected Institutional Portal • Firebase Firestore RBAC Secured • {liveAdmins.length} Admin &amp; Office Staff • {liveFaculty.length} Faculty Members
+        </span>
       </div>
 
       {/* Biometric Face Detection Modal */}
@@ -1015,6 +1020,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         isOpen={isFaceAuthModalOpen}
         portal={faceAuthPortal}
         initialTargetId={initialFaceTargetId}
+        adminMembers={liveAdmins}
+        facultyMembers={liveFaculty}
         onClose={() => setIsFaceAuthModalOpen(false)}
         onAuthenticated={(user) => {
           onUserAuthenticated(user);

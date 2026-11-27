@@ -105,7 +105,7 @@ export const INITIAL_USERS: any[] = [
     name: 'Harpreet Aulakh',
     email: 'harpreet.aulakh@sunstone.in',
     passwordHash: defaultPasswordHash,
-    role: 'admin',
+    role: 'faculty',
     department: 'Corporate Training & Placement Cell',
     designation: 'Associate Director',
     businessRole: 'Director & Placement Head',
@@ -930,6 +930,7 @@ export const REMOVED_ASSET_CODES = new Set([
   'AST-0015', // Laptop (ThinkPad E14)
   'AST-0016', // Keyboard & Mouse Combo
   'AST-0022', // VGA Cable (5m)
+  'AST-0027', // Audio Adapter Kit
   'AST-0029', // Laser Pointer (Red Beam)
   'AST-0030', // Universal Remote Control
   'AST-0031', // Headphones (Audio-Technica)

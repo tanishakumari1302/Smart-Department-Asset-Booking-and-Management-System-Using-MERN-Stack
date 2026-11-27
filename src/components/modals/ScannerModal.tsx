@@ -145,7 +145,11 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
     setIsScanningAnimation(true);
 
     const found = assets.find(
-      (a) => a.code.toUpperCase() === cleanCode || a._id.toUpperCase() === cleanCode
+      (a) =>
+        a.code.toUpperCase() === cleanCode ||
+        a._id.toUpperCase() === cleanCode ||
+        (a.barcodeValue && a.barcodeValue.trim().toUpperCase() === cleanCode) ||
+        (a.serialNumber && a.serialNumber.trim().toUpperCase() === cleanCode)
     );
 
     setTimeout(() => {
@@ -202,6 +206,8 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
     return (
       a.name.toLowerCase().includes(q) ||
       a.code.toLowerCase().includes(q) ||
+      (a.barcodeValue && a.barcodeValue.toLowerCase().includes(q)) ||
+      (a.serialNumber && a.serialNumber.toLowerCase().includes(q)) ||
       a.location.toLowerCase().includes(q) ||
       (a.category && a.category.toLowerCase().includes(q))
     );

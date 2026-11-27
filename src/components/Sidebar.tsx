@@ -1,5 +1,5 @@
 import React from 'react';
-import { User, ClusterInfo, AcademicSettings, calculateDefaultAcademicYear, NavTab, isTabAllowedForRole, DashboardKPIs } from '../types';
+import { User, ClusterInfo, AcademicSettings, BrandingSettings, DEFAULT_BRANDING, calculateDefaultAcademicYear, NavTab, isTabAllowedForRole, DashboardKPIs } from '../types';
 
 export type { NavTab };
 
@@ -11,6 +11,8 @@ interface SidebarProps {
   totalAssetsCount: number;
   cluster: ClusterInfo | null;
   academicSettings?: AcademicSettings;
+  branding?: BrandingSettings;
+  onOpenBrandingModal?: () => void;
   isMobileOpen?: boolean;
   onCloseMobile?: () => void;
   realUserRole?: string;
@@ -30,6 +32,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   totalAssetsCount,
   cluster,
   academicSettings,
+  branding = DEFAULT_BRANDING,
+  onOpenBrandingModal,
   isMobileOpen = false,
   onCloseMobile,
   realUserRole,
@@ -40,6 +44,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   assignedAssetsCount = 1,
   kpis,
 }) => {
+  const isAdmin = currentUser?.role === 'admin';
   return (
     <>
       {/* Mobile backdrop */}
@@ -57,32 +62,56 @@ export const Sidebar: React.FC<SidebarProps> = ({
       >
         <div className="flex flex-col">
           {/* Brand Header */}
-          <div className="h-16 px-5 flex items-center justify-between bg-[#0e1c2f] border-b border-white/5">
-            <div className="flex items-center gap-3">
-              <div className="h-9 w-9 rounded-lg bg-[#009299] flex items-center justify-center font-bold text-white shadow-md">
-                <span className="material-symbols-outlined text-[22px]">dns</span>
+          <div className="h-16 px-4 flex items-center justify-between bg-[#0e1c2f] border-b border-white/5 gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="h-9 w-9 rounded-lg bg-[#009299] flex items-center justify-center font-bold text-white shadow-md overflow-hidden shrink-0">
+                {branding.logoUrl ? (
+                  <img
+                    src={branding.logoUrl}
+                    alt={branding.appName}
+                    className="w-full h-full object-contain bg-white p-0.5"
+                  />
+                ) : (
+                  <span className="material-symbols-outlined text-[22px]">dns</span>
+                )}
               </div>
-              <div className="flex flex-col">
+              <div className="flex flex-col min-w-0">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-xl font-bold tracking-tight text-white font-['Inter']">AssetHub</span>
-                  <span className="px-1.5 py-0.5 rounded bg-[#002022] text-[#009299] text-[10px] font-bold uppercase tracking-wider">
-                    ERP
+                  <span className="text-lg font-bold tracking-tight text-white font-['Inter'] truncate">
+                    {branding.appName || DEFAULT_BRANDING.appName}
                   </span>
+                  {branding.badgeText && (
+                    <span className="px-1.5 py-0.5 rounded bg-[#002022] text-[#009299] text-[10px] font-bold uppercase tracking-wider shrink-0">
+                      {branding.badgeText}
+                    </span>
+                  )}
                 </div>
-                <span className="text-[11px] text-[#77849c] font-semibold tracking-wider uppercase">
-                  College Asset Mgmt
+                <span className="text-[11px] text-[#77849c] font-semibold tracking-wider uppercase truncate">
+                  {branding.collegeSubtitle || DEFAULT_BRANDING.collegeSubtitle}
                 </span>
               </div>
             </div>
-            {onCloseMobile && (
-              <button
-                type="button"
-                onClick={onCloseMobile}
-                className="lg:hidden p-1 text-[#cbdbf5] hover:text-white"
-              >
-                <span className="material-symbols-outlined text-[22px]">close</span>
-              </button>
-            )}
+            <div className="flex items-center gap-1 shrink-0">
+              {isAdmin && onOpenBrandingModal && (
+                <button
+                  type="button"
+                  onClick={onOpenBrandingModal}
+                  className="p-1.5 rounded-lg text-[#77849c] hover:text-[#75f5fd] hover:bg-white/10 transition-colors cursor-pointer"
+                  title="Edit College Name & Logo"
+                >
+                  <span className="material-symbols-outlined text-[16px]">edit</span>
+                </button>
+              )}
+              {onCloseMobile && (
+                <button
+                  type="button"
+                  onClick={onCloseMobile}
+                  className="lg:hidden p-1 text-[#cbdbf5] hover:text-white"
+                >
+                  <span className="material-symbols-outlined text-[22px]">close</span>
+                </button>
+              )}
+            </div>
           </div>
 
         {/* Academic Node Context */}

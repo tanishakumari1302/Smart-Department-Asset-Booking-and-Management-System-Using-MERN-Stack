@@ -128,6 +128,48 @@ export const NewRequestView: React.FC<NewRequestViewProps> = ({
     return assets.find((a) => a.code === code || a._id === code) || null;
   }, [activeWizardTab, tempAssetCode, permModel, consumableItem, assets]);
 
+  // Smart Already-In-Custody / Extra Unit detection for the selected item
+  const existingCustodyAlert = useMemo(() => {
+    const activeHeld = myBookings.filter(
+      (b) => b.status === 'approved' || b.status === 'dispatched'
+    );
+    if (activeHeld.length === 0 || !currentSelectedAsset) {
+      return { isExtra: false, summary: '', message: '' };
+    }
+    const targetCode = (currentSelectedAsset.code || '').toLowerCase();
+    const targetName = (currentSelectedAsset.name || '').toLowerCase();
+
+    const exactMatches = activeHeld.filter(
+      (b) => (b.assetCode || '').toLowerCase() === targetCode
+    );
+    const summaryList = activeHeld.map((b) => `${b.quantity || 1}× ${b.assetName}`).join(', ');
+
+    if (exactMatches.length > 0) {
+      const heldQty = exactMatches.reduce((s, b) => s + (b.quantity || 1), 0);
+      return {
+        isExtra: true,
+        summary: summaryList,
+        message: `You already hold ${heldQty}× ${currentSelectedAsset.name} in active custody. If you need an additional/extra unit, please mention the reason clearly — your request will be flagged as an Extra Unit Request for Admin approval.`,
+      };
+    }
+
+    const isComputing =
+      currentSelectedAsset.category === 'it' ||
+      /laptop|pc|desktop|computer|monitor|projector|macbook/i.test(targetName);
+    const heldComputing = activeHeld.find((b) =>
+      /laptop|pc|desktop|computer|monitor|projector|macbook/i.test(b.assetName || '')
+    );
+    if (isComputing && heldComputing) {
+      return {
+        isExtra: true,
+        summary: summaryList,
+        message: `You already have ${heldComputing.assetName} assigned in your custody. Requesting ${currentSelectedAsset.name} will be marked as an Extra Hardware Unit request for Admin review.`,
+      };
+    }
+
+    return { isExtra: false, summary: summaryList, message: '' };
+  }, [myBookings, currentSelectedAsset]);
+
   // Run live conflict check on temporary inputs change
   useEffect(() => {
     let isCancelled = false;
@@ -186,9 +228,16 @@ export const NewRequestView: React.FC<NewRequestViewProps> = ({
         venue: tempVenue,
         purpose: tempPurpose,
         quantity: 1,
+        isExtraUnitRequest: existingCustodyAlert.isExtra,
+        existingCustodyNote: existingCustodyAlert.summary,
       });
       playBookingRequestSound();
-      showToast(`Temporary booking submitted for ${tempAssetCode}`, 'success');
+      showToast(
+        existingCustodyAlert.isExtra
+          ? `Extra Unit request submitted for ${tempAssetCode} (Admin will see your existing custody)`
+          : `Temporary booking submitted for ${tempAssetCode}`,
+        'success'
+      );
     } catch (err: any) {
       showToast(err.message || 'Failed to submit booking', 'warning');
     } finally {
@@ -209,9 +258,16 @@ export const NewRequestView: React.FC<NewRequestViewProps> = ({
         tenancyDuration: permDuration,
         purpose: permJustification,
         quantity: 1,
+        isExtraUnitRequest: existingCustodyAlert.isExtra,
+        existingCustodyNote: existingCustodyAlert.summary,
       });
       playBookingRequestSound();
-      showToast(`Permanent allocation requisition submitted for ${permModel}`, 'success');
+      showToast(
+        existingCustodyAlert.isExtra
+          ? `Extra Permanent Unit requisition submitted for ${permModel}`
+          : `Permanent allocation requisition submitted for ${permModel}`,
+        'success'
+      );
     } catch (err: any) {
       showToast(err.message || 'Failed to submit allocation', 'warning');
     } finally {
@@ -231,6 +287,8 @@ export const NewRequestView: React.FC<NewRequestViewProps> = ({
         venue: consumableSection,
         pickupLocation: consumablePickup,
         purpose: `Classroom consumable draw for ${consumableSection}`,
+        isExtraUnitRequest: existingCustodyAlert.isExtra,
+        existingCustodyNote: existingCustodyAlert.summary,
       });
       playBookingRequestSound();
       showToast(`Consumable issue requisition for ${consumableQty} units submitted`, 'success');
@@ -1037,6 +1095,19 @@ export const NewRequestView: React.FC<NewRequestViewProps> = ({
 
           {/* Tab Panes */}
           <div className="p-5">
+            {existingCustodyAlert.isExtra && (
+              <div className="mb-4 p-3.5 rounded-xl bg-amber-50 border border-amber-300 flex items-start gap-2.5 text-xs text-amber-900">
+                <span className="material-symbols-outlined text-[20px] text-amber-600 shrink-0 mt-0.5">
+                  warning
+                </span>
+                <div className="flex flex-col gap-0.5">
+                  <span className="font-bold text-amber-900 uppercase text-[11px] tracking-wider">
+                    Already In Your Custody — Extra Unit Request
+                  </span>
+                  <p className="leading-relaxed text-amber-800">{existingCustodyAlert.message}</p>
+                </div>
+              </div>
+            )}
             {/* ================= TAB A: TEMPORARY BOOKING ================= */}
             {activeWizardTab === 'temporary' && (
               <form onSubmit={handleTempSubmit} className="flex flex-col gap-4 text-xs">

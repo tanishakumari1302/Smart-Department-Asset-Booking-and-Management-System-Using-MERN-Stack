@@ -1449,10 +1449,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     ) : (
                       <button
                         onClick={() => onOpenStockAdjustModal(asset)}
-                        className="w-full py-1.5 bg-[#eff4ff] hover:bg-[#cbdbf5] text-[#426086] rounded text-xs font-semibold transition-all flex items-center justify-center gap-1 border border-[#cbdbf5]"
+                        className="w-full py-1.5 bg-[#eff4ff] hover:bg-[#cbdbf5] text-[#426086] rounded text-xs font-semibold transition-all flex items-center justify-center gap-1 border border-[#cbdbf5] cursor-pointer"
                       >
-                        <span className="material-symbols-outlined text-[15px]">tune</span>
-                        <span>Adjust Stock &amp; Condition</span>
+                        <span className="material-symbols-outlined text-[15px]">edit</span>
+                        <span>Edit / Delete Asset</span>
                       </button>
                     )}
                   </div>
@@ -1562,9 +1562,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         ) : (
                           <button
                             onClick={() => onOpenStockAdjustModal(asset)}
-                            className="px-2.5 py-1 bg-[#eff4ff] text-[#426086] hover:bg-[#dce9ff] rounded text-xs font-semibold transition-all border border-[#cbdbf5]"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#eff4ff] text-[#426086] hover:bg-[#dce9ff] rounded text-xs font-semibold transition-all border border-[#cbdbf5] cursor-pointer"
+                            title="Edit asset details, stock, condition, or delete asset"
                           >
-                            Adjust
+                            <span className="material-symbols-outlined text-[14px]">edit</span>
+                            <span>Edit / Delete</span>
                           </button>
                         )}
                       </td>
@@ -2573,7 +2575,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 className="px-3.5 py-1.5 bg-[#0e1c2f] hover:bg-[#426086] text-white rounded-lg text-xs font-bold transition-all shadow-2xs flex items-center gap-1.5 cursor-pointer shrink-0"
                               >
                                 <span className="material-symbols-outlined text-[15px]">edit</span>
-                                <span>Adjust / Restock</span>
+                                <span>Edit / Delete</span>
                               </button>
                             </div>
                           );

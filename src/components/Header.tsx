@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { User, AcademicSettings, calculateDefaultAcademicYear, ADMIN_OFFICE_STAFF, AUTHORIZED_FACULTY_MEMBERS, NavTab, Booking, Asset } from '../types';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { User, AcademicSettings, calculateDefaultAcademicYear, NavTab, Booking, Asset, StaffMember, buildMergedStaffLists } from '../types';
 import { detectPortalFromUrl } from '../utils/portalUtils';
 import { SharePortalModal } from './SharePortalModal';
 
@@ -33,6 +33,7 @@ interface HeaderProps {
   currentTab?: NavTab;
   bookings?: Booking[];
   assets?: Asset[];
+  staffDirectory?: StaffMember[];
   showToast?: (text: string, type: 'success' | 'warning' | 'info') => void;
 }
 
@@ -55,8 +56,13 @@ export const Header: React.FC<HeaderProps> = ({
   onSelectNavTab,
   bookings,
   assets,
+  staffDirectory = [],
   showToast,
 }) => {
+  const { admins: liveAdmins, faculty: liveFaculty } = useMemo(
+    () => buildMergedStaffLists(staffDirectory),
+    [staffDirectory]
+  );
   const [showNotifications, setShowNotifications] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
@@ -281,11 +287,11 @@ export const Header: React.FC<HeaderProps> = ({
                   )}
                 </button>
 
-                {/* Quick selector between Authorized Admins (Malay / Arpit / Harpreet) */}
+                {/* Quick selector between Authorized Admins */}
                 <select
                   value={currentUser?.id || currentUser?._id}
                   onChange={(e) => {
-                    const target = ADMIN_OFFICE_STAFF.find((s) => s.id === e.target.value || s._id === e.target.value);
+                    const target = liveAdmins.find((s) => s.id === e.target.value || s._id === e.target.value);
                     if (target) {
                       onSwitchUser({
                         ...target,
@@ -297,7 +303,7 @@ export const Header: React.FC<HeaderProps> = ({
                   className="h-7 pl-1.5 pr-2 bg-white text-[#0e1c2f] border border-[#cbdbf5] rounded-md text-[11px] font-bold focus:outline-none cursor-pointer shadow-2xs max-w-[170px] truncate ml-1"
                   title="Active Admin Profile"
                 >
-                  {ADMIN_OFFICE_STAFF.map((staff) => (
+                  {liveAdmins.map((staff) => (
                     <option key={staff.id} value={staff.id}>
                       {staff.name} ({staff.businessRole || staff.designation})
                     </option>
@@ -321,7 +327,7 @@ export const Header: React.FC<HeaderProps> = ({
                 <select
                   value={currentUser?.id || currentUser?._id}
                   onChange={(e) => {
-                    const target = AUTHORIZED_FACULTY_MEMBERS.find((f) => (f.id === e.target.value || f._id === e.target.value));
+                    const target = liveFaculty.find((f) => (f.id === e.target.value || f._id === e.target.value));
                     if (target) {
                       onSwitchUser({
                         ...target,
@@ -333,7 +339,7 @@ export const Header: React.FC<HeaderProps> = ({
                   className="h-7 pl-1.5 pr-2 bg-white text-[#004f55] border border-[#009299]/30 rounded-md text-[11px] font-bold focus:outline-none cursor-pointer shadow-2xs max-w-[150px] truncate"
                   title="Select Faculty Profile"
                 >
-                  {AUTHORIZED_FACULTY_MEMBERS.map((fac) => (
+                  {liveFaculty.map((fac) => (
                     <option key={fac.id} value={fac.id}>
                       {fac.name} • {fac.businessRole || fac.designation}
                     </option>
@@ -635,40 +641,44 @@ export const Header: React.FC<HeaderProps> = ({
                 </div>
               )}
 
-              {/* Quick Account Switcher (For demo / evaluating roles) */}
+              {/* Quick Account Switcher (Admin-only for Admin profiles; Faculty only sees Faculty profiles) */}
               {onSwitchUser && (
                 <div className="pt-2 border-t border-[#e5eeff] flex flex-col gap-1.5">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-[#77849c]">
-                    Quick Switch Account (Demo)
+                    Quick Switch Account
                   </span>
                   <div className="flex flex-col gap-1 max-h-36 overflow-y-auto pr-1">
-                    <span className="text-[9px] font-bold uppercase text-[#009299]">Admin &amp; Office Staff</span>
-                    {ADMIN_OFFICE_STAFF.map((staff) => (
-                      <button
-                        key={staff.id}
-                        type="button"
-                        onClick={() => {
-                          onSwitchUser(staff);
-                          setShowUserMenu(false);
-                        }}
-                        className={`text-left px-2 py-1 rounded text-[11px] flex items-center justify-between transition-colors cursor-pointer ${
-                          currentUser?.email === staff.email
-                            ? 'bg-[#0e1c2f] text-white font-semibold'
-                            : 'hover:bg-[#eff4ff] text-[#0b1c30]'
-                        }`}
-                      >
-                        <span className="truncate">{staff.name}</span>
-                        <span className="text-[9px] uppercase font-bold text-teal-400">Admin</span>
-                      </button>
-                    ))}
+                    {(realUserRole === 'admin' || isAdmin) && (
+                      <>
+                        <span className="text-[9px] font-bold uppercase text-[#009299]">Admin &amp; Office Staff</span>
+                        {liveAdmins.map((staff) => (
+                          <button
+                            key={staff.id}
+                            type="button"
+                            onClick={() => {
+                              onSwitchUser({ ...staff, role: 'admin', approvalStatus: 'approved' });
+                              setShowUserMenu(false);
+                            }}
+                            className={`text-left px-2 py-1 rounded text-[11px] flex items-center justify-between transition-colors cursor-pointer ${
+                              currentUser?.email === staff.email
+                                ? 'bg-[#0e1c2f] text-white font-semibold'
+                                : 'hover:bg-[#eff4ff] text-[#0b1c30]'
+                            }`}
+                          >
+                            <span className="truncate">{staff.name}</span>
+                            <span className="text-[9px] uppercase font-bold text-teal-400">Admin</span>
+                          </button>
+                        ))}
+                      </>
+                    )}
 
                     <span className="text-[9px] font-bold uppercase text-[#009299] mt-1">Authorized Faculty</span>
-                    {AUTHORIZED_FACULTY_MEMBERS.map((fac) => (
+                    {liveFaculty.map((fac) => (
                       <button
                         key={fac.id}
                         type="button"
                         onClick={() => {
-                          onSwitchUser(fac);
+                          onSwitchUser({ ...fac, role: 'faculty', approvalStatus: 'approved' });
                           setShowUserMenu(false);
                         }}
                         className={`text-left px-2 py-1 rounded text-[11px] flex items-center justify-between transition-colors cursor-pointer ${
@@ -744,9 +754,9 @@ export const Header: React.FC<HeaderProps> = ({
                 // Valid Passcodes: 2026 or 1234 or admin
                 const val = adminPinInput.trim().toLowerCase();
                 if (val === '2026' || val === '1234' || val === 'admin') {
-                  const staffTarget = ADMIN_OFFICE_STAFF[0]; // Malay Aggarwal
-                  if (onSwitchPreviewRole) onSwitchPreviewRole(null);
-                  if (onSwitchUser) {
+                  const staffTarget = liveAdmins[0];
+                  if (staffTarget && onSwitchPreviewRole) onSwitchPreviewRole(null);
+                  if (staffTarget && onSwitchUser) {
                     onSwitchUser({
                       ...staffTarget,
                       role: 'admin',

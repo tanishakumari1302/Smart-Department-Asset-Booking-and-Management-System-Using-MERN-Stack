@@ -11,6 +11,8 @@ interface FaceAuthModalProps {
   isOpen: boolean;
   portal: 'faculty' | 'admin';
   initialTargetId?: string;
+  adminMembers?: User[];
+  facultyMembers?: User[];
   onClose: () => void;
   onAuthenticated: (user: User) => void;
   showToast?: (text: string, type: 'success' | 'warning' | 'info') => void;
@@ -20,6 +22,8 @@ export const FaceAuthModal: React.FC<FaceAuthModalProps> = ({
   isOpen,
   portal,
   initialTargetId,
+  adminMembers,
+  facultyMembers,
   onClose,
   onAuthenticated,
   showToast,
@@ -30,6 +34,10 @@ export const FaceAuthModal: React.FC<FaceAuthModalProps> = ({
   const animFrameRef = useRef<number | null>(null);
   const faceDetectorRef = useRef<any>(null);
 
+  const liveAdmins = adminMembers && adminMembers.length > 0 ? adminMembers : ADMIN_OFFICE_STAFF;
+  const liveFaculty = facultyMembers && facultyMembers.length > 0 ? facultyMembers : AUTHORIZED_FACULTY_MEMBERS;
+  const activePool = portal === 'admin' ? liveAdmins : liveFaculty;
+
   // Roster categories: 'all' | 'leadership' | 'admin' | 'faculty'
   const [rosterCategory, setRosterCategory] = useState<'all' | 'leadership' | 'admin' | 'faculty'>(
     portal === 'admin' ? 'admin' : 'faculty'
@@ -37,13 +45,10 @@ export const FaceAuthModal: React.FC<FaceAuthModalProps> = ({
   const [searchMemberQuery, setSearchMemberQuery] = useState('');
 
   // Selected target member - strictly admin for admin portal, faculty for faculty portal
-  const defaultInitial = portal === 'admin'
-    ? (initialTargetId && ADMIN_OFFICE_STAFF.some((s) => s.id === initialTargetId)
-        ? initialTargetId
-        : ADMIN_OFFICE_STAFF[0]?.id || '')
-    : (initialTargetId && AUTHORIZED_FACULTY_MEMBERS.some((f) => f.id === initialTargetId)
-        ? initialTargetId
-        : AUTHORIZED_FACULTY_MEMBERS[0]?.id || '');
+  const defaultInitial =
+    initialTargetId && activePool.some((s) => s.id === initialTargetId)
+      ? initialTargetId
+      : activePool[0]?.id || '';
 
   const [selectedTargetId, setSelectedTargetId] = useState<string>(defaultInitial);
 
@@ -75,10 +80,7 @@ export const FaceAuthModal: React.FC<FaceAuthModalProps> = ({
 
   // Filtered roster based on portal & search query
   const filteredRoster = React.useMemo(() => {
-    let pool: User[] =
-      portal === 'admin'
-        ? ADMIN_OFFICE_STAFF
-        : AUTHORIZED_FACULTY_MEMBERS;
+    const pool: User[] = activePool;
 
     if (!searchMemberQuery.trim()) return pool;
     const q = searchMemberQuery.toLowerCase().trim();
@@ -90,12 +92,10 @@ export const FaceAuthModal: React.FC<FaceAuthModalProps> = ({
         (m.department && m.department.toLowerCase().includes(q)) ||
         (m.email && m.email.toLowerCase().includes(q))
     );
-  }, [portal, searchMemberQuery]);
+  }, [activePool, searchMemberQuery]);
 
   const currentTarget =
-    (portal === 'admin' ? ADMIN_OFFICE_STAFF : AUTHORIZED_FACULTY_MEMBERS).find(
-      (m) => m.id === selectedTargetId
-    ) || (portal === 'admin' ? ADMIN_OFFICE_STAFF[0] : AUTHORIZED_FACULTY_MEMBERS[0]);
+    activePool.find((m) => m.id === selectedTargetId) || activePool[0];
 
   const currentTargetAvatar = customAvatars[currentTarget?.id || ''] || currentTarget?.avatar;
 
@@ -214,13 +214,10 @@ export const FaceAuthModal: React.FC<FaceAuthModalProps> = ({
   // Initialize camera when modal opens
   useEffect(() => {
     if (isOpen) {
-      const initialId = portal === 'admin'
-        ? (initialTargetId && ADMIN_OFFICE_STAFF.some((s) => s.id === initialTargetId)
-            ? initialTargetId
-            : ADMIN_OFFICE_STAFF[0]?.id || '')
-        : (initialTargetId && AUTHORIZED_FACULTY_MEMBERS.some((f) => f.id === initialTargetId)
-            ? initialTargetId
-            : AUTHORIZED_FACULTY_MEMBERS[0]?.id || '');
+      const initialId =
+        initialTargetId && activePool.some((s) => s.id === initialTargetId)
+          ? initialTargetId
+          : activePool[0]?.id || '';
       setSelectedTargetId(initialId);
       setScanState('idle');
       setScanProgress(0);
@@ -535,8 +532,7 @@ export const FaceAuthModal: React.FC<FaceAuthModalProps> = ({
     playBiometricSound('success');
 
     setTimeout(() => {
-      const isAdminMember = ADMIN_OFFICE_STAFF.some((a) => a.id === targetUser.id);
-      const effectiveRole = portal === 'admin' ? 'admin' : (isAdminMember ? 'faculty' : (targetUser.role || 'faculty'));
+      const effectiveRole = portal === 'admin' ? 'admin' : 'faculty';
       const authenticatedProfile: User = {
         ...targetUser,
         role: effectiveRole,
@@ -687,104 +683,46 @@ export const FaceAuthModal: React.FC<FaceAuthModalProps> = ({
           </button>
         </div>
 
-        {/* Quick Executive & Faculty Select Chips */}
+        {/* Quick Select Chips (Strictly isolated to current portal roster) */}
         <div className="px-4 py-2 bg-[#091829] border-b border-white/10 flex items-center gap-2 overflow-x-auto shrink-0 scrollbar-thin">
           <span className="text-[10px] uppercase font-bold text-gray-400 shrink-0">
             Quick Select:
           </span>
-          <button
-            type="button"
-            onClick={() => {
-              setSelectedTargetId(INSTITUTIONAL_LEADERSHIP[0]?.id || '');
-              setScanState('idle');
-              setFailureReason(null);
-            }}
-            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1.5 transition-all shrink-0 cursor-pointer ${
-              currentTarget.id === INSTITUTIONAL_LEADERSHIP[0]?.id
-                ? 'bg-amber-400/20 text-amber-300 border border-amber-400/60 shadow-sm'
-                : 'bg-white/5 hover:bg-white/10 text-gray-300 border border-white/10'
-            }`}
-          >
-            <span>🎖️</span>
-            <span>Director Harpreet</span>
-          </button>
-
-          {kavitaMember && (
+          {activePool.slice(0, 4).map((member) => (
             <button
+              key={member.id}
               type="button"
               onClick={() => {
-                setSelectedTargetId(kavitaMember.id || '');
-                setRosterCategory('faculty');
+                setSelectedTargetId(member.id || '');
                 setScanState('idle');
                 setFailureReason(null);
               }}
               className={`px-2.5 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1.5 transition-all shrink-0 cursor-pointer ${
-                currentTarget.id === kavitaMember.id
+                currentTarget?.id === member.id
                   ? 'bg-teal-400/25 text-teal-200 border border-teal-400/70 shadow-sm'
                   : 'bg-white/5 hover:bg-white/10 text-gray-300 border border-white/10'
               }`}
             >
               <img
-                src={kavitaMember.avatar}
-                alt="Ms. Kavita Thakur"
+                src={member.avatar || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(member.name)}`}
+                alt={member.name}
                 className="w-4 h-4 rounded-full object-cover"
               />
-              <span>Ms. Kavita Thakur</span>
-              <span className="text-[9px] opacity-75 font-normal">(Sr. Associate)</span>
+              <span>{member.name}</span>
             </button>
-          )}
+          ))}
 
-          {rhythmMember && (
+          {currentTarget && (
             <button
               type="button"
-              onClick={() => {
-                setSelectedTargetId(rhythmMember.id || '');
-                setRosterCategory('faculty');
-                setScanState('idle');
-                setFailureReason(null);
-              }}
-              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1.5 transition-all shrink-0 cursor-pointer ${
-                currentTarget.id === rhythmMember.id
-                  ? 'bg-teal-400/25 text-teal-200 border border-teal-400/70 shadow-sm'
-                  : 'bg-white/5 hover:bg-white/10 text-gray-300 border border-white/10'
-              }`}
+              onClick={() => handleTestWithMemberPhoto(currentTarget)}
+              className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-[#009299]/30 hover:bg-[#009299]/50 text-[#75f5fd] border border-[#009299]/60 flex items-center gap-1 shrink-0 ml-auto cursor-pointer"
+              title="Instant 1-click test of face authentication for selected member"
             >
-              <img
-                src={rhythmMember.avatar}
-                alt="Ms. Rhythm Dua"
-                className="w-4 h-4 rounded-full object-cover"
-              />
-              <span>Ms. Rhythm Dua</span>
-              <span className="text-[9px] opacity-75 font-normal">(BDM)</span>
+              <span className="material-symbols-outlined text-[14px]">science</span>
+              <span>Test {currentTarget.name.split(' ')[0]}</span>
             </button>
           )}
-
-          <button
-            type="button"
-            onClick={() => {
-              setSelectedTargetId(INSTITUTIONAL_LEADERSHIP[1]?.id || '');
-              setScanState('idle');
-              setFailureReason(null);
-            }}
-            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1.5 transition-all shrink-0 cursor-pointer ${
-              currentTarget.id === INSTITUTIONAL_LEADERSHIP[1]?.id
-                ? 'bg-amber-400/20 text-amber-300 border border-amber-400/60 shadow-sm'
-                : 'bg-white/5 hover:bg-white/10 text-gray-300 border border-white/10'
-            }`}
-          >
-            <span>🏛️</span>
-            <span>AVP Malay</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleTestWithMemberPhoto(currentTarget)}
-            className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-[#009299]/30 hover:bg-[#009299]/50 text-[#75f5fd] border border-[#009299]/60 flex items-center gap-1 shrink-0 ml-auto cursor-pointer"
-            title="Instant 1-click test of face authentication for selected member"
-          >
-            <span className="material-symbols-outlined text-[14px]">science</span>
-            <span>Test {currentTarget.name.split(' ')[0]}</span>
-          </button>
         </div>
 
         {/* Camera Viewport Area */}
@@ -980,7 +918,7 @@ export const FaceAuthModal: React.FC<FaceAuthModalProps> = ({
                     <span>Admin Officer Biometric Clearance:</span>
                   </label>
                   <span className="px-2 py-0.5 rounded-full bg-[#009299]/20 text-[#75f5fd] text-[10px] font-bold border border-[#009299]/30">
-                    Malay Aggarwal &amp; Arpit Singh
+                    {liveAdmins.length} Authorized Officers
                   </span>
                 </>
               ) : (
@@ -990,7 +928,7 @@ export const FaceAuthModal: React.FC<FaceAuthModalProps> = ({
                     <span>Faculty Member Biometric Login:</span>
                   </label>
                   <span className="px-2 py-0.5 rounded-full bg-white/10 text-[#cbdbf5] text-[10px] font-bold">
-                    {AUTHORIZED_FACULTY_MEMBERS.length} Authorized Faculty
+                    {liveFaculty.length} Authorized Faculty
                   </span>
                 </>
               )}

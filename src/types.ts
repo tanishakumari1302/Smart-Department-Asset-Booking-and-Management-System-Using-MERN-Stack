@@ -31,7 +31,10 @@ export interface StaffMember {
   department: string;
   designation: string;
   businessRole?: string;
-  status: 'active' | 'deactivated';
+  phone?: string;
+  room?: string;
+  avatar?: string;
+  status: 'active' | 'deactivated' | 'removed';
   registered?: boolean;
   registeredUid?: string;
   createdAt?: string;
@@ -45,7 +48,10 @@ export interface Department {
   name: string;
   shortName: string;
   block?: string;
+  buildingBlock?: string;
   headOfDept?: string;
+  hodName?: string;
+  description?: string;
   facultyCount?: number;
   assetCount?: number;
   createdAt?: string;
@@ -74,6 +80,7 @@ export interface Asset {
   unit: string;
   location: string;
   serialNumber?: string;
+  barcodeValue?: string;
   specs?: string;
   status: 'operational' | 'low-stock' | 'maintenance' | 'dispatched' | 'depleted';
   barcodeTagStatus: 'verified' | 'pending-retag' | 'unassigned' | 'pending' | 'unlabeled';
@@ -137,6 +144,9 @@ export interface Booking {
   returnNotes?: string;
   returnAt?: string;
   returnBy?: string;
+  isExtraUnitRequest?: boolean;
+  existingCustodyNote?: string;
+  allottedDirectly?: boolean;
   createdAt: string;
   updatedAt?: string;
 }
@@ -196,6 +206,22 @@ export interface AcademicSettings {
   updatedAt?: string;
   updatedBy?: string;
 }
+
+export interface BrandingSettings {
+  appName: string;
+  badgeText: string;
+  collegeSubtitle: string;
+  logoUrl?: string;
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
+export const DEFAULT_BRANDING: BrandingSettings = {
+  appName: 'AssetHub',
+  badgeText: 'ERP',
+  collegeSubtitle: 'College Asset Mgmt',
+  logoUrl: '',
+};
 
 export function calculateDefaultAcademicYear(date = new Date()): AcademicSettings {
   const currentYear = date.getFullYear();
@@ -283,6 +309,10 @@ export interface FacultyCustodyItem {
   sessionStartTime: string;
   sessionEndTime: string;
   status: 'in-use' | 'returned';
+  linkedBookingId?: string;
+  allotmentType?: BookingType;
+  isExtraUnit?: boolean;
+  isCatalogAsset?: boolean;
 }
 
 export interface FacultyCustodyProfile {
@@ -365,7 +395,7 @@ export function getAllowedRolesForTab(tab: NavTab): Role[] {
   }
 }
 
-// Authorized Admin / Office Staff members with full administrative privileges
+// Authorized Admin / Office Staff members with full administrative privileges (ONLY Malay Aggarwal & Arpit Singh by default)
 export const ADMIN_OFFICE_STAFF: User[] = [
   {
     _id: 'usr_admin_malay',
@@ -397,31 +427,16 @@ export const ADMIN_OFFICE_STAFF: User[] = [
     room: 'Campus Operations Desk, Bay 1',
     approvalStatus: 'approved',
   },
-  {
-    _id: 'usr_fac_harpreet_a',
-    id: 'usr_fac_harpreet_a',
-    name: 'Harpreet Aulakh',
-    email: 'harpreet.aulakh@sunstone.in',
-    role: 'admin',
-    department: 'Corporate Training & Placement Cell',
-    designation: 'Associate Director',
-    businessRole: 'Director & Placement Head',
-    facultyId: 'SUN-CORP-01',
-    avatar: '/assets/faculty/harpreet_aulakh.jpeg',
-    phone: '+91 98102 22004',
-    room: 'Placement & Corporate Wing, Room 101',
-    approvalStatus: 'approved',
-  },
 ];
 
-// Authorized Academic Faculty Members (Faculty-side access & Dual Role)
+// Authorized Academic Faculty Members (Full Faculty Portal access only)
 export const AUTHORIZED_FACULTY_MEMBERS: User[] = [
   {
     _id: 'usr_fac_harpreet_a',
     id: 'usr_fac_harpreet_a',
     name: 'Harpreet Aulakh',
     email: 'harpreet.aulakh@sunstone.in',
-    role: 'admin',
+    role: 'faculty',
     department: 'Corporate Training & Placement Cell',
     designation: 'Associate Director',
     businessRole: 'Director & Placement Head',
@@ -636,7 +651,126 @@ export const ALL_INSTITUTIONAL_MEMBERS: User[] = [
 
 // Institutional Leadership & Directors (Associate Director Harpreet Aulakh & AVP Malay Aggarwal)
 export const INSTITUTIONAL_LEADERSHIP: User[] = [
-  ADMIN_OFFICE_STAFF[2], // Harpreet Aulakh (Associate Director & Admin Officer)
-  ADMIN_OFFICE_STAFF[0], // Malay Aggarwal (Assistant Vice President)
+  AUTHORIZED_FACULTY_MEMBERS[0], // Harpreet Aulakh (Associate Director - Faculty Portal)
+  ADMIN_OFFICE_STAFF[0], // Malay Aggarwal (Assistant Vice President - Admin Portal)
 ];
+
+/**
+ * Merges the official baseline staff roster with live Firestore staff_directory overrides.
+ * Supports adding new faculty/admin, editing existing official members, role changes, and removals.
+ */
+export function buildMergedStaffLists(staffDirectory: StaffMember[] = []): {
+  admins: User[];
+  faculty: User[];
+  allActive: User[];
+  allDirectory: StaffMember[];
+} {
+  const dummyPlaceholderEmails = new Set([
+    'admin@assethub.edu',
+    'faculty@assethub.edu',
+    'tech@assethub.edu',
+  ]);
+
+  const byEmail = new Map<string, StaffMember>();
+  const byId = new Map<string, StaffMember>();
+
+  // 1. Seed with official defaults
+  [...ADMIN_OFFICE_STAFF, ...AUTHORIZED_FACULTY_MEMBERS].forEach((u) => {
+    const emailKey = (u.email || '').toLowerCase().trim();
+    const rec: StaffMember = {
+      _id: u._id,
+      id: u.id || u._id,
+      employeeId: u.facultyId,
+      facultyId: u.facultyId,
+      name: u.name,
+      email: u.email,
+      role: u.role,
+      department: u.department,
+      designation: u.designation,
+      businessRole: u.businessRole,
+      phone: u.phone,
+      room: u.room,
+      avatar: u.avatar,
+      status: 'active',
+      registered: true,
+      createdAt: u.createdAt,
+      updatedAt: u.updatedAt,
+    };
+    byEmail.set(emailKey, rec);
+    byId.set(rec._id, rec);
+  });
+
+  // 2. Apply live Firestore overrides (oldest first so newest add/edit always wins)
+  const orderedLive = [...(staffDirectory || [])].sort((a, b) => {
+    const ta = a.updatedAt || a.createdAt || '';
+    const tb = b.updatedAt || b.createdAt || '';
+    return ta.localeCompare(tb);
+  });
+
+  orderedLive.forEach((live) => {
+    const emailKey = (live.email || '').toLowerCase().trim();
+    if (!emailKey || dummyPlaceholderEmails.has(emailKey)) {
+      return;
+    }
+
+    const existing = byId.get(live.id || live._id) || byEmail.get(emailKey);
+    const merged: StaffMember = {
+      ...(existing || {}),
+      ...live,
+      id: live.id || live._id || existing?.id || `staff_${emailKey}`,
+      _id: live._id || live.id || existing?._id || `staff_${emailKey}`,
+      avatar: live.avatar || existing?.avatar,
+      facultyId: live.facultyId || live.employeeId || existing?.facultyId,
+      employeeId: live.employeeId || live.facultyId || existing?.employeeId,
+      businessRole: live.businessRole || existing?.businessRole,
+      phone: live.phone || existing?.phone,
+      room: live.room || existing?.room,
+    };
+
+    // If email changed on an existing official record, clear old email key
+    if (existing && existing.email.toLowerCase().trim() !== emailKey) {
+      byEmail.delete(existing.email.toLowerCase().trim());
+    }
+
+    // Ensure Harpreet Aulakh is strictly faculty unless explicitly overridden via a new live edit
+    if (emailKey === 'harpreet.aulakh@sunstone.in' && !live.updatedAt) {
+      merged.role = 'faculty';
+    }
+
+    byEmail.set(emailKey, merged);
+    byId.set(merged._id, merged);
+  });
+
+  // 3. Build lists excluding permanently removed records
+  const allDirectory = Array.from(byEmail.values()).filter((s) => s.status !== 'removed');
+
+  const toUser = (s: StaffMember): User => ({
+    _id: s._id,
+    id: s.id || s._id,
+    name: s.name,
+    email: s.email,
+    role: s.role,
+    department: s.department,
+    designation: s.designation || (s.role === 'admin' ? 'Office Administrator' : 'Faculty Member'),
+    businessRole: s.businessRole || (s.role === 'admin' ? 'Admin / Office Staff' : 'Academic Faculty'),
+    facultyId: s.facultyId || s.employeeId || `SUN-${(s.id || s._id).slice(-4).toUpperCase()}`,
+    avatar: s.avatar || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(s.name)}`,
+    phone: s.phone || '+91 98100 00000',
+    room: s.room || (s.role === 'admin' ? 'Central Admin Office' : 'Faculty Wing'),
+    approvalStatus: 'approved',
+    createdAt: s.createdAt,
+    updatedAt: s.updatedAt,
+  });
+
+  const activeMembers = allDirectory.filter((s) => s.status !== 'deactivated').map(toUser);
+  const admins = activeMembers.filter((u) => u.role === 'admin');
+  const faculty = activeMembers.filter((u) => u.role !== 'admin');
+
+  return {
+    admins: admins.length > 0 ? admins : [...ADMIN_OFFICE_STAFF],
+    faculty: faculty.length > 0 ? faculty : [...AUTHORIZED_FACULTY_MEMBERS],
+    allActive: activeMembers,
+    allDirectory,
+  };
+}
 
